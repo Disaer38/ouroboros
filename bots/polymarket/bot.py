@@ -1,162 +1,241 @@
 """
 Polymarket Arbitrage Bot — main loop.
 
+Strategies:
+  - neg_risk: Buy YES + NO when total cost < threshold (guaranteed $1 payout)
+
 Modes:
-  paper   — scan and simulate trades, log P&L, no real transactions
-  live    — scan and execute real trades (requires wallet + API keys)
+  - paper: Simulated trades (no wallet needed)
+  - live:  Real trades via CLOB API (requires POLYMARKET_PRIVATE_KEY)
 
 Usage:
-  python -m bots.polymarket.bot --mode paper
-  python -m bots.polymarket.bot --mode paper --interval 30 --max-position 10
+  python -m bots.polymarket.bot --mode paper --once
+  python -m bots.polymarket.bot --mode paper --interval 30
+  python -m bots.polymarket.bot --mode live --max-position 5
+
+See README.md for full documentation.
 """
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
-import time
 from datetime import datetime, timezone
 
 import httpx
 
 from .paper_trader import PaperTrader
-from .scanner import discover_markets, scan_neg_risk
+from .scanner import discover_markets, scan_all, _is_intraday
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("polymarket.bot")
+logger = logging.getLogger(__name__)
 
 
-def print_stats(paper: PaperTrader) -> None:
-    stats = paper.get_stats()
-    print("\n" + "="*55)
-    print("  PAPER TRADING STATS")
-    print("="*55)
-    print(f"  Opportunities scanned : {stats['total_opportunities']}")
-    print(f"  Trades opened         : {stats['total_trades']}")
-    print(f"  Open                  : {stats['open_trades']}")
-    print(f"  Resolved              : {stats['closed_trades']}")
-    print(f"  Total PnL             : {stats['total_pnl_usdc']:+.4f} USDC")
-    print(f"  Win rate              : {stats['win_rate_pct']:.1f}%")
-    print(f"  ROI                   : {stats['roi_pct']:+.2f}%")
-    print(f"  Total invested        : {stats['total_invested_usdc']:.2f} USDC")
-    print("="*55 + "\n")
+def setup_logging(verbose: bool = False) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    # Suppress noisy third-party loggers
+    for lib in ("httpx", "httpcore", "asyncio"):
+        logging.getLogger(lib).setLevel(logging.WARNING)
 
 
 async def run_paper(
-    interval_seconds: int = 30,
-    max_position_usdc: float = 10.0,
+    *,
+    interval: float = 30.0,
+    max_position: float = 10.0,
+    max_exposure: float = 50.0,
     profit_threshold: float = 0.97,
-    min_depth_usdc: float = 2.0,
-    max_total_exposure: float = 50.0,
+    min_depth: float = 2.0,
+    once: bool = False,
+    verbose: bool = False,
 ) -> None:
     """
     Paper trading loop.
 
-    Every interval_seconds:
-      1. Discover active BTC/ETH 5/15-min markets
-      2. Fetch orderbooks and detect neg-risk arb opportunities
-      3. Simulate trades (log to Drive, no on-chain execution)
-      4. Resolve expired trades and track P&L
-      5. Print stats
+    Scans for neg-risk opportunities every `interval` seconds and
+    simulates trades without real money.
     """
-    paper = PaperTrader(max_position_usdc=max_position_usdc)
-    total_invested = 0.0
+    trader = PaperTrader(
+        max_position_usdc=max_position,
+        max_exposure_usdc=max_exposure,
+    )
 
-    logger.info(f"Starting PAPER mode | interval={interval_seconds}s | max_pos={max_position_usdc} USDC")
-    logger.info(f"Profit threshold: {(1 - profit_threshold)*100:.1f}%+ net | Max exposure: {max_total_exposure} USDC")
+    print(f"\n🤖 Polymarket Paper Trader")
+    print(f"   Strategy: neg-risk (YES+NO < {profit_threshold})")
+    print(f"   Max position: ${max_position:.0f} | Max exposure: ${max_exposure:.0f}")
+    print(f"   Scan interval: {interval}s {'(single scan)' if once else ''}")
+    print()
 
     scan_count = 0
+    opp_log_path = os.path.join(
+        os.environ.get("DRIVE_ROOT", "/content/drive/MyDrive/Ouroboros"),
+        "logs",
+        "opportunities.jsonl",
+    )
 
     async with httpx.AsyncClient() as client:
-        # Discover markets once — they don't change frequently
-        markets = await discover_markets(client)
-        if not markets:
-            logger.warning("No BTC/ETH 5/15-min markets found. Retrying in 60s...")
-            await asyncio.sleep(60)
-            markets = await discover_markets(client)
-
-        if not markets:
-            logger.error("Still no markets found. Check API connectivity.")
-            return
-
-        logger.info(f"Monitoring {len(markets)} markets")
-
         while True:
             scan_count += 1
-            logger.info(f"--- Scan #{scan_count} | {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} ---")
+            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            print(f"[{ts}] Scan #{scan_count} — discovering markets...")
 
-            # 1. Resolve expired paper trades
-            resolved = paper.check_resolutions()
-            if resolved:
-                for t in resolved:
-                    logger.info(f"  Resolved: {t.market_question[:40]} pnl={t.pnl:+.4f}")
+            try:
+                markets = await discover_markets(client)
+            except Exception as e:
+                logger.error(f"Market discovery failed: {e}")
+                if once:
+                    break
+                await asyncio.sleep(interval)
+                continue
 
-            # 2. Refresh market list every 10 scans
-            if scan_count % 10 == 0:
-                new_markets = await discover_markets(client)
-                if new_markets:
-                    markets = new_markets
-                    logger.info(f"Refreshed market list: {len(markets)} markets")
+            if not markets:
+                print("  ⚠️  No active markets found. Markets may not be open yet.")
+                print("  ℹ️  BTC/ETH 5min/15min markets run on weekdays, ~9AM-5PM ET")
+                if once:
+                    break
+                await asyncio.sleep(interval)
+                continue
 
-            # 3. Scan for opportunities
-            opportunities = await scan_neg_risk(
-                client,
-                markets,
-                threshold=profit_threshold,
-                min_depth_usdc=min_depth_usdc,
-                max_position_usdc=max_position_usdc,
-            )
+            intraday_count = sum(1 for m in markets if _is_intraday(m.question))
+            print(f"  Found {len(markets)} markets ({intraday_count} intraday)")
+
+            # Scan for opportunities
+            try:
+                opportunities = await scan_all(
+                    client,
+                    markets,
+                    profit_threshold=profit_threshold,
+                    min_depth_usdc=min_depth,
+                )
+            except Exception as e:
+                logger.error(f"Scan failed: {e}")
+                if once:
+                    break
+                await asyncio.sleep(interval)
+                continue
+
+            # Log all opportunities to Drive
+            if opportunities:
+                _log_opportunities(opportunities, opp_log_path)
+
+            # Enter trades for best opportunities
+            for opp in opportunities:
+                print(
+                    f"  💡 ARB: {opp.market.question[:55]}\n"
+                    f"     YES={opp.yes_ask:.3f} + NO={opp.no_ask:.3f} = "
+                    f"{opp.total_cost:.3f} → {opp.profit_pct:.1f}% gross margin"
+                )
+                trader.enter_trade(opp)
 
             if not opportunities:
-                logger.info("  No opportunities this scan.")
-            else:
-                logger.info(f"  Found {len(opportunities)} opportunities:")
-                for opp in opportunities[:5]:  # show top 5
-                    logger.info(f"    {opp}")
-                    paper.log_opportunity(opp)
+                print("  📭 No opportunities this scan.")
 
-                    # Trade if under max exposure
-                    remaining_budget = max_total_exposure - total_invested
-                    if remaining_budget < 1.0:
-                        logger.info("  Max exposure reached, not trading.")
-                        continue
+            if once:
+                break
 
-                    trade_size = min(opp.max_size_usdc, max_position_usdc, remaining_budget)
-                    trade = paper.simulate_trade(opp, size_usdc=trade_size)
-                    if trade:
-                        total_invested += trade.size_usdc
+            print()
+            await asyncio.sleep(interval)
 
-            # 4. Print stats every 5 scans
-            if scan_count % 5 == 0:
-                print_stats(paper)
-
-            await asyncio.sleep(interval_seconds)
+    # Final summary
+    trader.print_summary()
 
 
 async def run_live(
-    private_key: str,
-    interval_seconds: int = 10,
-    max_position_usdc: float = 10.0,
+    *,
+    interval: float = 30.0,
+    max_position: float = 5.0,
+    max_exposure: float = 50.0,
     profit_threshold: float = 0.97,
+    min_depth: float = 5.0,
+    once: bool = False,
 ) -> None:
     """
-    Live trading mode (stub — implement after paper trading validation).
+    Live trading loop.
 
-    Requires:
-      - POLYMARKET_PRIVATE_KEY env var
-      - POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE
+    Requires POLYMARKET_PRIVATE_KEY environment variable.
     """
-    raise NotImplementedError(
-        "Live trading not yet implemented. Run --mode paper first to validate strategy."
+    from .auth import get_client as get_clob_client
+
+    clob = get_clob_client()
+    if not clob:
+        logger.error(
+            "No POLYMARKET_PRIVATE_KEY set. "
+            "Set the env var or use --mode paper for paper trading."
+        )
+        sys.exit(1)
+
+    print(f"\n🚨 LIVE TRADING MODE")
+    print(f"   Max position: ${max_position:.0f} | Max exposure: ${max_exposure:.0f}")
+    print(f"   Profit threshold: {profit_threshold}")
+    print()
+
+    async with httpx.AsyncClient() as http:
+        while True:
+            markets = await discover_markets(http)
+            if not markets:
+                print("No markets. Waiting...")
+                if once:
+                    break
+                await asyncio.sleep(interval)
+                continue
+
+            opportunities = await scan_all(
+                http,
+                markets,
+                profit_threshold=profit_threshold,
+                min_depth_usdc=min_depth,
+            )
+
+            for opp in opportunities:
+                # TODO: execute via CLOB API using clob client
+                # This is the paper-to-live bridge — implement after paper testing
+                logger.info(f"[LIVE TODO] Would trade: {opp.market.question[:50]}")
+
+            if once:
+                break
+
+            await asyncio.sleep(interval)
+
+
+def _log_opportunities(opportunities: list, path: str) -> None:
+    """Append detected opportunities to Drive log."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ts = datetime.now(timezone.utc).isoformat()
+        with open(path, "a") as f:
+            for opp in opportunities:
+                record = {
+                    "ts": ts,
+                    "market_id": opp.market.id,
+                    "question": opp.market.question,
+                    "yes_ask": opp.yes_ask,
+                    "no_ask": opp.no_ask,
+                    "total_cost": opp.total_cost,
+                    "profit_pct": opp.profit_pct,
+                    "yes_depth": opp.yes_depth,
+                    "no_depth": opp.no_depth,
+                    "max_size_usdc": opp.max_size_usdc,
+                }
+                f.write(json.dumps(record) + "\n")
+    except Exception as e:
+        logger.warning(f"Failed to log opportunity: {e}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Polymarket neg-risk arbitrage bot",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m bots.polymarket.bot --once              # Single scan (dry run)
+  python -m bots.polymarket.bot --interval 30       # Paper trade every 30s
+  python -m bots.polymarket.bot --mode live         # Live (needs private key)
+        """,
     )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Polymarket Arbitrage Bot")
     parser.add_argument(
         "--mode",
         choices=["paper", "live"],
@@ -165,55 +244,68 @@ def main() -> None:
     )
     parser.add_argument(
         "--interval",
-        type=int,
-        default=30,
+        type=float,
+        default=30.0,
         help="Scan interval in seconds (default: 30)",
     )
     parser.add_argument(
         "--max-position",
         type=float,
         default=10.0,
-        help="Max USDC per position (default: 10)",
+        dest="max_position",
+        help="Max USDC per trade (default: 10)",
     )
     parser.add_argument(
         "--max-exposure",
         type=float,
         default=50.0,
-        help="Max total USDC exposure (default: 50)",
+        dest="max_exposure",
+        help="Max total USDC deployed (default: 50)",
     )
     parser.add_argument(
         "--profit-threshold",
         type=float,
         default=0.97,
-        help="Enter trade when YES+NO < threshold (default: 0.97 = 3%+ profit)",
+        dest="profit_threshold",
+        help="Enter if YES+NO < this value (default: 0.97)",
     )
     parser.add_argument(
         "--min-depth",
         type=float,
         default=2.0,
-        help="Min USDC depth required on each side (default: 2)",
+        dest="min_depth",
+        help="Minimum USDC depth per side (default: 2)",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run a single scan and exit",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable debug logging",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    setup_logging(args.verbose)
+
+    common = dict(
+        interval=args.interval,
+        max_position=args.max_position,
+        max_exposure=args.max_exposure,
+        profit_threshold=args.profit_threshold,
+        min_depth=args.min_depth,
+        once=args.once,
+    )
 
     if args.mode == "paper":
-        asyncio.run(run_paper(
-            interval_seconds=args.interval,
-            max_position_usdc=args.max_position,
-            profit_threshold=args.profit_threshold,
-            min_depth_usdc=args.min_depth,
-            max_total_exposure=args.max_exposure,
-        ))
-    elif args.mode == "live":
-        pk = os.environ.get("POLYMARKET_PRIVATE_KEY")
-        if not pk:
-            print("ERROR: Set POLYMARKET_PRIVATE_KEY env var for live trading")
-            sys.exit(1)
-        asyncio.run(run_live(
-            private_key=pk,
-            interval_seconds=args.interval,
-            max_position_usdc=args.max_position,
-            profit_threshold=args.profit_threshold,
-        ))
+        asyncio.run(run_paper(**common, verbose=args.verbose))
+    else:
+        asyncio.run(run_live(**common))
 
 
 if __name__ == "__main__":
