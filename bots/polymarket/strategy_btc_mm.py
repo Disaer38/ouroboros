@@ -249,7 +249,7 @@ class BTCUpDownMM:
 
         # Components
         self.inventory = Inventory()
-        self.kappa_est = KappaEstimator(window_seconds=int(self.window_seconds))
+        self.kappa_est = KappaEstimator()
 
         # State
         self.last_quotes: Optional[ASQuotes] = None
@@ -288,7 +288,7 @@ class BTCUpDownMM:
         self.last_p_fair = p_fair
 
         sigma = state.sigma_annualized()
-        kappa = self.kappa_est.kappa
+        kappa = self.kappa_est.estimate_kappa()
         t_remaining = max(1.0 / 3600, self.time_remaining_years)  # at least 1s
 
         quotes = compute_as_quotes(

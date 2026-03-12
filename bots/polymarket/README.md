@@ -125,3 +125,42 @@ from eth_account import Account
 acct = Account.from_key("0xYOUR_KEY")
 print(acct.address)  # Send USDC/MATIC to this address on Polygon
 ```
+
+## Market Maker Strategy (Avellaneda-Stoikov)
+
+The `run_mm.py` entry point runs a dynamic market maker on BTC binary option markets.
+
+### How it works
+
+1. **Fair Price** (`fair_price.py`): Fetches real-time BTC/USDT from Binance and computes
+   `P_fair = P(BTC > K at expiry)` using the Black-Scholes binary call formula.
+
+2. **Inventory Management**: Tracks YES/NO share exposure and computes a reservation price
+   that skews quotes to reduce imbalance: `r = P_fair - q·γ·σ²·T`
+
+3. **Optimal Spread** (`kappa_estimator.py`): Uses the A-S formula `δ* = (1/γ)·ln(1 + γ/κ)`
+   where κ is estimated dynamically from rolling fill history.
+
+4. **Safety**: Cancels and requotes when P_fair moves >3%, stops 60s before expiry.
+
+### Run
+
+```bash
+# Paper mode (no real orders)
+python -m bots.polymarket.run_mm
+
+# Single dry-run quote cycle
+python -m bots.polymarket.run_mm --once
+
+# Live mode
+python -m bots.polymarket.run_mm --live --gamma 0.3 --size 5
+```
+
+### Parameters
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `--gamma` | 0.5 | Risk aversion. Lower = wider spreads. |
+| `--size` | 10 | USDC per order. |
+| `--requote` | 15 | Seconds between requotes. |
+| `--max-markets` | 3 | Max concurrent markets. |
