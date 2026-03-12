@@ -114,7 +114,7 @@ class Memory:
                 if dir_raw in ("out", "outgoing"):
                     text = short(raw_text, 800)
                 else:
-                    text = raw_text  # never truncate creator's messages
+                    text = short(raw_text, 600)  # truncate creator messages too — large pastes waste tokens
                 lines.append(f"{direction} [{ts}] {text}")
 
             return f"Showing {len(entries)} messages:\n\n" + "\n".join(lines)
@@ -152,30 +152,28 @@ class Memory:
         if not entries:
             return ""
         lines = []
-        for e in entries[-100:]:
+        for e in entries:
             dir_raw = str(e.get("direction", "")).lower()
             direction = "→" if dir_raw in ("out", "outgoing") else "←"
             ts_full = e.get("ts", "")
             ts_hhmm = ts_full[11:16] if len(ts_full) >= 16 else ""
-            # Creator messages: no truncation (most valuable context)
-            # Outgoing messages: truncate to 800 chars
             raw_text = str(e.get("text", ""))
             if dir_raw in ("out", "outgoing"):
                 text = short(raw_text, 800)
             else:
-                text = raw_text  # never truncate creator's messages
+                text = short(raw_text, 400)  # truncate large creator pastes
             lines.append(f"{direction} {ts_hhmm} {text}")
         return "\n".join(lines)
 
-    def summarize_progress(self, entries: List[Dict[str, Any]], limit: int = 15) -> str:
-        """Summarize progress.jsonl entries (Ouroboros's self-talk / progress messages)."""
+    def summarize_progress(self, entries: List[Dict[str, Any]], limit: int = 10) -> str:
+        """Summarize progress.jsonl entries."""
         if not entries:
             return ""
         lines = []
         for e in entries[-limit:]:
             ts_full = e.get("ts", "")
             ts_hhmm = ts_full[11:16] if len(ts_full) >= 16 else ""
-            text = short(str(e.get("text", "")), 300)
+            text = short(str(e.get("text", "")), 200)
             lines.append(f"⚙️ {ts_hhmm} {text}")
         return "\n".join(lines)
 
@@ -203,7 +201,7 @@ class Memory:
         type_counts: Counter = Counter()
         for e in entries:
             type_counts[e.get("type", "unknown")] += 1
-        top_types = type_counts.most_common(10)
+        top_types = type_counts.most_common(8)
         lines = ["Event counts:"]
         for evt_type, count in top_types:
             lines.append(f"  {evt_type}: {count}")
@@ -211,8 +209,8 @@ class Memory:
         errors = [e for e in entries if e.get("type") in error_types]
         if errors:
             lines.append("\nRecent errors:")
-            for e in errors[-10:]:
-                lines.append(f"  {e.get('type', '?')}: {short(str(e.get('error', '')), 120)}")
+            for e in errors[-5:]:
+                lines.append(f"  {e.get('type', '?')}: {short(str(e.get('error', '')), 100)}")
         return "\n".join(lines)
 
     def summarize_supervisor(self, entries: List[Dict[str, Any]]) -> str:
