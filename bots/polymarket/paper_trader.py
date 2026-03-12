@@ -250,3 +250,100 @@ class PaperTrader:
                 f.write(json.dumps(record) + "\n")
         except Exception as e:
             logger.warning(f"Failed to log trade: {e}")
+
+
+class DualSideMMStrategy:
+    """
+    Dual-side market making strategy inspired by vague-sourdough.
+
+    Core logic:
+    - Scan 5-min BTC/ETH/SOL/XRP markets every 30 seconds
+    - If Up_ask + Down_ask < 0.97 (>3% spread): buy both sides
+    - Ladder into position with 3-5 orders per side
+    - Let market resolve naturally (5 min)
+    - Track realized PnL per market pair
+    """
+
+    def __init__(self, min_spread_pct: float = 0.03, max_position_usdc: float = 20.0):
+        self.min_spread_pct = min_spread_pct  # Minimum spread to enter
+        self.max_position_usdc = max_position_usdc  # Max USDC per market pair
+        self.active_pairs: dict = {}  # conditionId -> {up_cost, down_cost, entered_at}
+        self.completed_pairs: list = []  # resolved pairs with PnL
+
+    def check_spread(self, up_ask: float, down_ask: float) -> tuple[bool, float]:
+        """
+        Check if there's an arbitrage opportunity.
+        Returns (has_opportunity, spread_pct)
+        """
+        total_cost = up_ask + down_ask
+        spread_pct = 1.0 - total_cost
+        return spread_pct >= self.min_spread_pct, spread_pct
+
+    def calculate_entry(self, up_ask: float, down_ask: float,
+                        budget_usdc: float) -> dict:
+        """
+        Calculate how much to buy on each side.
+        Proportional to probability (buy more of the cheaper/uncertain side).
+        """
+        total = up_ask + down_ask
+        # Split budget proportionally — but weight toward cheaper side for bigger gain
+        down_weight = (1 - up_ask) / total  # more weight to uncertain outcome
+        up_weight = 1 - down_weight
+
+        return {
+            "up_usdc": round(budget_usdc * up_weight, 2),
+            "down_usdc": round(budget_usdc * down_weight, 2),
+            "expected_pnl": round((1.0 - total) * budget_usdc, 2),
+            "spread_pct": round((1.0 - total) * 100, 2),
+        }
+
+    def record_pair_entry(self, condition_id: str, up_usdc: float,
+                          down_usdc: float, market_title: str):
+        """Record that we entered a dual-side position."""
+        self.active_pairs[condition_id] = {
+            "market_title": market_title,
+            "up_cost": up_usdc,
+            "down_cost": down_usdc,
+            "total_cost": up_usdc + down_usdc,
+            "entered_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def resolve_pair(self, condition_id: str, winning_side: str,
+                     winning_tokens: float) -> float:
+        """
+        Resolve a market pair. Returns realized PnL.
+        winning_side: 'Up' or 'Down'
+        winning_tokens: how many tokens we hold on winning side
+        """
+        if condition_id not in self.active_pairs:
+            return 0.0
+
+        pair = self.active_pairs.pop(condition_id)
+        payout = winning_tokens  # each token pays $1
+        cost = pair["total_cost"]
+        pnl = payout - cost
+
+        self.completed_pairs.append({
+            **pair,
+            "winning_side": winning_side,
+            "payout": payout,
+            "pnl": round(pnl, 4),
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return pnl
+
+    def get_stats(self) -> dict:
+        """Get strategy performance statistics."""
+        if not self.completed_pairs:
+            return {"completed": 0, "total_pnl": 0, "win_rate": 0}
+
+        total_pnl = sum(p["pnl"] for p in self.completed_pairs)
+        winning = sum(1 for p in self.completed_pairs if p["pnl"] > 0)
+
+        return {
+            "completed": len(self.completed_pairs),
+            "active": len(self.active_pairs),
+            "total_pnl": round(total_pnl, 4),
+            "win_rate": round(winning / len(self.completed_pairs) * 100, 1),
+            "avg_pnl_per_trade": round(total_pnl / len(self.completed_pairs), 4),
+        }
