@@ -66,6 +66,12 @@ class PaperMMState:
     yes_short_qty: float = 0.0    # sold at ask (short)
     yes_short_proceeds: float = 0.0  # total USDC received selling
 
+    # Position tracking (NO tokens)
+    no_long_qty: float = 0.0
+    no_long_cost: float = 0.0
+    no_short_qty: float = 0.0
+    no_short_proceeds: float = 0.0
+
     # Round-trip realized PnL (ask_fill - bid_fill on matching pairs)
     realized_pnl: float = 0.0
 
@@ -89,6 +95,11 @@ class PaperMMState:
         return self.yes_long_qty - self.yes_short_qty
 
     @property
+    def net_no_qty(self) -> float:
+        """Net long NO position."""
+        return self.no_long_qty - self.no_short_qty
+
+    @property
     def total_buy_cost(self) -> float:
         return self.yes_long_cost
 
@@ -96,77 +107,93 @@ class PaperMMState:
     def total_sell_proceeds(self) -> float:
         return self.yes_short_proceeds
 
-    def unrealized_pnl(self, yes_mid: float) -> float:
-        """
-        Unrealized PnL at current mid price.
-        Long YES @ avg_cost, currently worth yes_mid each.
-        """
-        if self.yes_long_qty <= 0:
-            return 0.0
-        avg_cost = self.yes_long_cost / self.yes_long_qty
-        return self.yes_long_qty * (yes_mid - avg_cost)
+    def unrealized_pnl(self, yes_mid: float, no_mid: float = 0.5) -> float:
+        """Unrealized PnL at current mid prices."""
+        unrealized = 0.0
+        if self.yes_long_qty > 0:
+            avg_cost = self.yes_long_cost / self.yes_long_qty
+            unrealized += self.yes_long_qty * (yes_mid - avg_cost)
+        if self.no_long_qty > 0:
+            avg_cost = self.no_long_cost / self.no_long_qty
+            unrealized += self.no_long_qty * (no_mid - avg_cost)
+        return unrealized
 
     def record_fill(self, fill: MMFill) -> None:
         """Record a fill and update position."""
         self.fills.append(fill)
-        if fill.direction == "BUY":
-            self.yes_long_qty += fill.qty
-            self.yes_long_cost += fill.size_usdc * (1 + TAKER_FEE)
-        else:  # SELL
-            self.yes_short_qty += fill.qty
-            self.yes_short_proceeds += fill.size_usdc * (1 - TAKER_FEE)
-            # Compute realized PnL if we have a long position to close
-            if self.yes_long_qty > 0:
-                avg_buy = self.yes_long_cost / self.yes_long_qty
-                closed_qty = min(fill.qty, self.yes_long_qty)
-                self.realized_pnl += closed_qty * (fill.price - avg_buy) * (1 - TAKER_FEE)
+        if fill.side == "YES":
+            if fill.direction == "BUY":
+                self.yes_long_qty += fill.qty
+                self.yes_long_cost += fill.size_usdc * (1 + TAKER_FEE)
+            else:  # SELL
+                self.yes_short_qty += fill.qty
+                self.yes_short_proceeds += fill.size_usdc * (1 - TAKER_FEE)
+                if self.yes_long_qty > 0:
+                    avg_buy = self.yes_long_cost / self.yes_long_qty
+                    closed_qty = min(fill.qty, self.yes_long_qty)
+                    self.realized_pnl += closed_qty * (fill.price - avg_buy) * (1 - TAKER_FEE)
+        elif fill.side == "NO":
+            if fill.direction == "BUY":
+                self.no_long_qty += fill.qty
+                self.no_long_cost += fill.size_usdc * (1 + TAKER_FEE)
+            else:  # SELL
+                self.no_short_qty += fill.qty
+                self.no_short_proceeds += fill.size_usdc * (1 - TAKER_FEE)
+                if self.no_long_qty > 0:
+                    avg_buy = self.no_long_cost / self.no_long_qty
+                    closed_qty = min(fill.qty, self.no_long_qty)
+                    self.realized_pnl += closed_qty * (fill.price - avg_buy) * (1 - TAKER_FEE)
 
     def resolve(self, outcome: str) -> float:
         """
         Compute final PnL at market resolution.
 
         Args:
-            outcome: "UP" → YES tokens worth $1.00
-                     "DOWN" → YES tokens worth $0.00
+            outcome: "UP"   → YES tokens worth $1.00, NO tokens worth $0.00
+                     "DOWN" → YES tokens worth $0.00, NO tokens worth $1.00
 
         Returns realized + resolution PnL.
         """
         self.resolved = True
         self.outcome = outcome
         yes_value = 1.0 if outcome == "UP" else 0.0
+        no_value = 1.0 if outcome == "DOWN" else 0.0
 
-        # Net YES position at resolution
-        net_qty = self.net_yes_qty
-        if net_qty != 0:
-            # Long YES: worth yes_value each at resolution
-            if net_qty > 0:
-                avg_cost = (self.yes_long_cost / self.yes_long_qty) if self.yes_long_qty > 0 else 0
-                self.resolution_pnl = net_qty * (yes_value - avg_cost)
-            else:
-                # Net short — shouldn't happen in pure MM but handle it
-                avg_proceeds = (self.yes_short_proceeds / self.yes_short_qty) if self.yes_short_qty > 0 else 0
-                self.resolution_pnl = abs(net_qty) * (avg_proceeds - yes_value)
-        else:
-            self.resolution_pnl = 0.0
+        res_yes = 0.0
+        if self.yes_long_qty > 0:
+            avg_cost = self.yes_long_cost / self.yes_long_qty
+            res_yes = self.yes_long_qty * (yes_value - avg_cost)
 
+        res_no = 0.0
+        if self.no_long_qty > 0:
+            avg_cost = self.no_long_cost / self.no_long_qty
+            res_no = self.no_long_qty * (no_value - avg_cost)
+
+        self.resolution_pnl = res_yes + res_no
         total = self.realized_pnl + self.resolution_pnl
         logger.info(
             f"Market resolved [{outcome}]: {self.market_question[:50]}\n"
             f"  realized={self.realized_pnl:+.4f} resolution={self.resolution_pnl:+.4f} "
-            f"total={total:+.4f} USDC | fills={len(self.fills)}"
+            f"(yes={res_yes:+.4f} no={res_no:+.4f}) total={total:+.4f} | fills={len(self.fills)}"
         )
         return total
 
     def summary_dict(self) -> dict:
+        yes_fills = sum(1 for f in self.fills if f.side == "YES")
+        no_fills = sum(1 for f in self.fills if f.side == "NO")
         return {
             "market_id": self.market_id,
             "market_question": self.market_question,
             "quote_count": self.quote_count,
             "fill_count": len(self.fills),
+            "yes_fills": yes_fills,
+            "no_fills": no_fills,
             "yes_long_qty": round(self.yes_long_qty, 4),
             "yes_long_cost": round(self.yes_long_cost, 4),
-            "yes_short_qty": round(self.yes_short_qty, 4),
+            "no_long_qty": round(self.no_long_qty, 4),
+            "no_long_cost": round(self.no_long_cost, 4),
             "net_yes_qty": round(self.net_yes_qty, 4),
+            "net_no_qty": round(self.net_no_qty, 4),
             "realized_pnl": round(self.realized_pnl, 4),
             "resolution_pnl": round(self.resolution_pnl, 4) if self.resolution_pnl is not None else None,
             "outcome": self.outcome,
@@ -210,84 +237,131 @@ class PaperMMEngine:
     def process_quote(
         self,
         market,
-        bid: float,
-        ask: float,
-        p_fair: float,
-        ob_yes,          # Orderbook for YES token (from scanner.get_orderbook)
+        quotes,            # BothSidesQuotes from strategy_btc_mm
+        ob_yes,            # Orderbook for YES token
+        ob_no,             # Orderbook for NO token
+        only_reduce: bool = False,
     ) -> list[MMFill]:
         """
-        Simulate fills against the current real orderbook.
+        Simulate fills against both YES and NO real orderbooks.
 
-        Returns list of fills that occurred this cycle.
+        Fill logic:
+        - YES BID FILL: our yes_bid >= market YES best_ask → we BUY YES
+        - YES ASK FILL: our yes_ask <= market YES best_bid → we SELL YES
+        - NO BID FILL:  our no_bid >= market NO best_ask  → we BUY NO
+        - NO ASK FILL:  our no_ask <= market NO best_bid  → we SELL NO
+
+        In only_reduce mode: only allow fills that REDUCE existing inventory.
         """
         state = self._get_or_create(market)
         state.quote_count += 1
-        state.last_bid = bid
-        state.last_ask = ask
-        state.last_p_fair = p_fair
+        state.last_bid = quotes.yes_bid
+        state.last_ask = quotes.yes_ask
+        state.last_p_fair = quotes.p_fair
 
         fills = []
-        market_best_ask = ob_yes.best_ask()
-        market_best_bid = ob_yes.best_bid()
 
-        # BID FILL: our bid >= market's best ask → we pay ask, we get YES tokens
-        # This happens when market moves against us or we quote too aggressively
-        if bid >= market_best_ask and market_best_ask > 0:
-            # Available size at market ask
-            depth = ob_yes.depth_at(market_best_ask, "ask")
+        def _allows_buy(side: str) -> bool:
+            if not only_reduce:
+                return True
+            if side == "YES":
+                return state.net_yes_qty < 0
+            else:
+                return state.net_no_qty < 0
+
+        def _allows_sell(side: str) -> bool:
+            if not only_reduce:
+                return True
+            if side == "YES":
+                return state.yes_long_qty > 0
+            else:
+                return state.no_long_qty > 0
+
+        # ── YES side ──────────────────────────────────────────────────────────
+        yes_best_ask = ob_yes.best_ask()
+        yes_best_bid = ob_yes.best_bid()
+
+        # YES BID FILL: our bid >= market ask → we BUY YES
+        if quotes.yes_bid >= yes_best_ask and yes_best_ask > 0 and _allows_buy("YES"):
+            depth = ob_yes.depth_at(yes_best_ask, "ask")
             size_usdc = min(self.order_size_usdc, depth)
             if size_usdc >= 0.5:
-                qty = size_usdc / market_best_ask
+                qty = size_usdc / yes_best_ask
                 fill = MMFill(
-                    ts=time.time(),
-                    side="YES",
-                    direction="BUY",
-                    price=market_best_ask,     # fill at market's ask (we're the aggressor)
-                    size_usdc=size_usdc,
-                    qty=qty,
-                    our_quote=bid,
-                    market_price=market_best_ask,
-                    market_question=market.question,
-                    market_id=market.id,
+                    ts=time.time(), side="YES", direction="BUY",
+                    price=yes_best_ask, size_usdc=size_usdc, qty=qty,
+                    our_quote=quotes.yes_bid, market_price=yes_best_ask,
+                    market_question=market.question, market_id=market.id,
                 )
                 state.record_fill(fill)
                 fills.append(fill)
                 logger.info(
-                    f"[PAPER BID FILL] {market.question[:50]}\n"
-                    f"  BUY YES @ {market_best_ask:.4f} (our_bid={bid:.4f}) "
-                    f"size=${size_usdc:.2f} qty={qty:.2f}"
+                    f"[PAPER BID FILL] BUY YES @ {yes_best_ask:.4f} "
+                    f"(our_bid={quotes.yes_bid:.4f}) size=${size_usdc:.2f}"
                 )
 
-        # ASK FILL: our ask <= market's best bid → someone buys YES from us
-        # We sell YES tokens at our ask price
-        if ask <= market_best_bid and market_best_bid > 0:
-            # Available size at market bid
-            depth = ob_yes.depth_at(market_best_bid, "bid")
+        # YES ASK FILL: our ask <= market bid → we SELL YES
+        if quotes.yes_ask <= yes_best_bid and yes_best_bid > 0 and _allows_sell("YES"):
+            depth = ob_yes.depth_at(yes_best_bid, "bid")
             size_usdc = min(self.order_size_usdc, depth)
             if size_usdc >= 0.5:
-                qty = size_usdc / ask
+                qty = size_usdc / quotes.yes_ask
                 fill = MMFill(
-                    ts=time.time(),
-                    side="YES",
-                    direction="SELL",
-                    price=ask,                 # fill at our ask
-                    size_usdc=size_usdc,
-                    qty=qty,
-                    our_quote=ask,
-                    market_price=market_best_bid,
-                    market_question=market.question,
-                    market_id=market.id,
+                    ts=time.time(), side="YES", direction="SELL",
+                    price=quotes.yes_ask, size_usdc=size_usdc, qty=qty,
+                    our_quote=quotes.yes_ask, market_price=yes_best_bid,
+                    market_question=market.question, market_id=market.id,
                 )
                 state.record_fill(fill)
                 fills.append(fill)
                 logger.info(
-                    f"[PAPER ASK FILL] {market.question[:50]}\n"
-                    f"  SELL YES @ {ask:.4f} (market_bid={market_best_bid:.4f}) "
-                    f"size=${size_usdc:.2f} qty={qty:.2f}"
+                    f"[PAPER ASK FILL] SELL YES @ {quotes.yes_ask:.4f} "
+                    f"(market_bid={yes_best_bid:.4f}) size=${size_usdc:.2f}"
                 )
 
-        # Log this quote cycle
-        self._log_quote(market, bid, ask, p_fair, market_best_bid, market_best_ask, fills)
+        # ── NO side ───────────────────────────────────────────────────────────
+        no_best_ask = ob_no.best_ask()
+        no_best_bid = ob_no.best_bid()
+
+        # NO BID FILL: our no_bid >= market NO ask → we BUY NO
+        if quotes.no_bid >= no_best_ask and no_best_ask > 0 and _allows_buy("NO"):
+            depth = ob_no.depth_at(no_best_ask, "ask")
+            size_usdc = min(self.order_size_usdc, depth)
+            if size_usdc >= 0.5:
+                qty = size_usdc / no_best_ask
+                fill = MMFill(
+                    ts=time.time(), side="NO", direction="BUY",
+                    price=no_best_ask, size_usdc=size_usdc, qty=qty,
+                    our_quote=quotes.no_bid, market_price=no_best_ask,
+                    market_question=market.question, market_id=market.id,
+                )
+                state.record_fill(fill)
+                fills.append(fill)
+                logger.info(
+                    f"[PAPER BID FILL] BUY NO  @ {no_best_ask:.4f} "
+                    f"(our_bid={quotes.no_bid:.4f}) size=${size_usdc:.2f}"
+                )
+
+        # NO ASK FILL: our no_ask <= market NO bid → we SELL NO
+        if quotes.no_ask <= no_best_bid and no_best_bid > 0 and _allows_sell("NO"):
+            depth = ob_no.depth_at(no_best_bid, "bid")
+            size_usdc = min(self.order_size_usdc, depth)
+            if size_usdc >= 0.5:
+                qty = size_usdc / quotes.no_ask
+                fill = MMFill(
+                    ts=time.time(), side="NO", direction="SELL",
+                    price=quotes.no_ask, size_usdc=size_usdc, qty=qty,
+                    our_quote=quotes.no_ask, market_price=no_best_bid,
+                    market_question=market.question, market_id=market.id,
+                )
+                state.record_fill(fill)
+                fills.append(fill)
+                logger.info(
+                    f"[PAPER ASK FILL] SELL NO  @ {quotes.no_ask:.4f} "
+                    f"(market_bid={no_best_bid:.4f}) size=${size_usdc:.2f}"
+                )
+
+        self._log_quote(market, quotes, yes_best_bid, yes_best_ask, no_best_bid, no_best_ask, fills)
         return fills
 
     def resolve_market(self, market_id: str, outcome: str) -> float:
@@ -353,13 +427,15 @@ class PaperMMEngine:
             for s in sorted(self.states.values(), key=lambda x: x.start_ts):
                 total_m = s.realized_pnl + (s.resolution_pnl or 0.0)
                 status = f"[{s.outcome}]" if s.resolved else "[OPEN]"
+                yes_f = sum(1 for f in s.fills if f.side == "YES")
+                no_f = sum(1 for f in s.fills if f.side == "NO")
                 print(
                     f"  {status} {s.market_question[:45]}\n"
-                    f"    quotes={s.quote_count} fills={len(s.fills)} "
+                    f"    quotes={s.quote_count} fills={len(s.fills)} (YES:{yes_f} NO:{no_f}) "
                     f"realized={s.realized_pnl:+.4f} total={total_m:+.4f}"
                 )
 
-    def _log_quote(self, market, bid, ask, p_fair, best_bid, best_ask, fills) -> None:
+    def _log_quote(self, market, quotes, yes_best_bid, yes_best_ask, no_best_bid, no_best_ask, fills) -> None:
         """Append quote cycle to Drive log."""
         try:
             os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
@@ -368,13 +444,21 @@ class PaperMMEngine:
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "market_id": market.id,
                 "market_question": market.question[:60],
-                "our_bid": round(bid, 4),
-                "our_ask": round(ask, 4),
-                "p_fair": round(p_fair, 4),
-                "market_best_bid": round(best_bid, 4),
-                "market_best_ask": round(best_ask, 4),
-                "spread": round(ask - bid, 4),
+                "yes_bid": round(quotes.yes_bid, 4),
+                "yes_ask": round(quotes.yes_ask, 4),
+                "no_bid": round(quotes.no_bid, 4),
+                "no_ask": round(quotes.no_ask, 4),
+                "p_fair": round(quotes.p_fair, 4),
+                "inventory_skew": round(quotes.inventory_skew, 4),
+                "only_reduce": quotes.only_reduce,
+                "yes_best_bid": round(yes_best_bid, 4),
+                "yes_best_ask": round(yes_best_ask, 4),
+                "no_best_bid": round(no_best_bid, 4),
+                "no_best_ask": round(no_best_ask, 4),
+                "spread": round(quotes.yes_ask - quotes.yes_bid, 4),
                 "fills": len(fills),
+                "yes_fills": sum(1 for f in fills if f.side == "YES"),
+                "no_fills": sum(1 for f in fills if f.side == "NO"),
             }
             with open(self.log_path, "a") as f:
                 f.write(json.dumps(record) + "\n")

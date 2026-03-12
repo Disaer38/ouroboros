@@ -53,6 +53,7 @@ MAX_INVENTORY_YES    = 50.0   # Max net YES inventory (USDC worth)
 MAX_INVENTORY_NO     = 50.0   # Max net NO inventory (USDC worth)
 CLOB_API             = "https://clob.polymarket.com"
 POLYMARKET_FEE       = 0.02   # 2% taker fee per side
+EXPIRY_REDUCE_WINDOW = 60.0   # Switch to "only reduce" mode N seconds before expiry
 
 
 # ── Market window parser ─────────────────────────────────────────────────────
@@ -199,6 +200,21 @@ class ASQuotes:
     t_remaining: float
 
 
+@dataclass
+class BothSidesQuotes:
+    """Quotes for both YES and NO tokens."""
+    p_fair: float           # P(BTC Up)
+    yes_bid: float          # bid for YES (we buy YES)
+    yes_ask: float          # ask for YES (we sell YES)
+    no_bid: float           # bid for NO (we buy NO)
+    no_ask: float           # ask for NO (we sell NO)
+    spread: float
+    reservation: float
+    inventory_skew: float   # how much we skewed due to inventory
+    t_remaining: float
+    only_reduce: bool       # True if within EXPIRY_REDUCE_WINDOW seconds of expiry
+
+
 def compute_as_quotes(
     p_fair: float,
     inventory_net: float,
@@ -291,7 +307,7 @@ class BTCUpDownMM:
         self.open_orders: dict[str, OpenOrder] = {}  # order_id → OpenOrder
 
         # State
-        self.last_quotes: Optional[ASQuotes] = None
+        self.last_quotes: Optional[BothSidesQuotes] = None
         self.last_p_fair: float = 0.5
         self.quote_count: int = 0
         self.fill_count: int = 0
@@ -315,34 +331,117 @@ class BTCUpDownMM:
         """Best estimate of mid price (= P_fair when no orderbook data)."""
         return self.last_p_fair
 
-    def compute_quotes(self) -> tuple[float, float]:
-        """Compute current A-S bid/ask. Returns (bid, ask)."""
+    def compute_quotes(self) -> BothSidesQuotes:
+        """
+        Compute A-S quotes for BOTH YES and NO tokens.
+
+        Key insight: YES and NO are complementary (YES + NO = $1.00).
+        So if YES fair price is P, then NO fair price is (1 - P).
+
+        Inventory skewing:
+        - If we're long YES (net_yes > 0), lower YES bid (buy less) and lower YES ask (sell more urgently)
+        - Mirror on NO side: raise NO bid (buy more to hedge)
+        - The skew is proportional to inventory imbalance
+
+        Time-decay:
+        - Within EXPIRY_REDUCE_WINDOW seconds: only_reduce=True
+        - In only_reduce mode, we don't widen quotes — we aggressively tighten
+          the side that unwinds inventory (best ask if long, best bid if short)
+        """
         state = get_btc_state()
         if len(state.prices) < 3:
             bootstrap_from_klines()
 
         fetch_btc_price()
 
-        p_fair = compute_updown_fair_price(
+        p_fair_yes = compute_updown_fair_price(
             window_seconds=self.window_seconds,
             momentum_lookback=min(60.0, self.window_seconds),
         )
-        self.last_p_fair = p_fair
+        p_fair_no = 1.0 - p_fair_yes
+        self.last_p_fair = p_fair_yes
 
         sigma = state.sigma_annualized()
         kappa = self.kappa_est.estimate_kappa()
         t_remaining = max(1.0 / 3600, self.time_remaining_years)
+        t_remaining_sec = self.time_remaining
 
-        quotes = compute_as_quotes(
-            p_fair=p_fair,
-            inventory_net=self.inventory.net_yes,
-            t_remaining=t_remaining,
-            sigma=sigma,
-            gamma=self.gamma,
-            kappa=kappa,
+        only_reduce = t_remaining_sec <= EXPIRY_REDUCE_WINDOW
+
+        # Inventory net: positive = net long YES, negative = net long NO
+        inv_net_yes = self.inventory.net_yes  # yes_qty - no_qty
+
+        # A-S reservation prices (each side independently)
+        # YES reservation: adjust for net YES inventory
+        res_yes = p_fair_yes - self.gamma * sigma**2 * inv_net_yes * t_remaining
+        # NO reservation: adjust for net NO inventory (which is -inv_net_yes)
+        res_no = p_fair_no - self.gamma * sigma**2 * (-inv_net_yes) * t_remaining
+
+        # A-S spread
+        spread_as = self.gamma * sigma**2 * t_remaining
+        if kappa > 0 and self.gamma > 0:
+            spread_as += (2.0 / self.gamma) * math.log(1.0 + self.gamma / kappa)
+        spread = max(MIN_SPREAD, min(MAX_SPREAD, spread_as))
+
+        # Compute inventory skew factor
+        yes_cost = self.inventory.yes_cost
+        no_cost = self.inventory.no_cost
+        total_inventory = yes_cost + no_cost
+
+        # Skew: how imbalanced we are (-1 = fully NO, 0 = balanced, +1 = fully YES)
+        if total_inventory > 0:
+            inventory_skew = (yes_cost - no_cost) / max(total_inventory, 1.0)
+        else:
+            inventory_skew = 0.0
+
+        # YES quotes
+        yes_bid = res_yes - spread / 2.0
+        yes_ask = res_yes + spread / 2.0
+
+        # NO quotes
+        no_bid = res_no - spread / 2.0
+        no_ask = res_no + spread / 2.0
+
+        # Clamp all quotes to valid range
+        yes_bid = max(0.02, min(0.98, yes_bid))
+        yes_ask = max(0.02, min(0.98, yes_ask))
+        no_bid = max(0.02, min(0.98, no_bid))
+        no_ask = max(0.02, min(0.98, no_ask))
+
+        # Ensure minimum spread on each side
+        for side in ('yes', 'no'):
+            if side == 'yes':
+                if yes_ask - yes_bid < MIN_SPREAD:
+                    mid = (yes_bid + yes_ask) / 2.0
+                    yes_bid = max(0.02, mid - MIN_SPREAD / 2.0)
+                    yes_ask = min(0.98, mid + MIN_SPREAD / 2.0)
+            else:
+                if no_ask - no_bid < MIN_SPREAD:
+                    mid = (no_bid + no_ask) / 2.0
+                    no_bid = max(0.02, mid - MIN_SPREAD / 2.0)
+                    no_ask = min(0.98, mid + MIN_SPREAD / 2.0)
+
+        # Safety: YES_ask + NO_ask must be > 1.0 (otherwise we're giving away free money)
+        # If sum < 1.02, widen both asks slightly
+        if yes_ask + no_ask < 1.02:
+            gap = 1.02 - (yes_ask + no_ask)
+            yes_ask = min(0.98, yes_ask + gap / 2)
+            no_ask = min(0.98, no_ask + gap / 2)
+
+        quotes = BothSidesQuotes(
+            p_fair=p_fair_yes,
+            yes_bid=yes_bid,
+            yes_ask=yes_ask,
+            no_bid=no_bid,
+            no_ask=no_ask,
+            spread=spread,
+            reservation=res_yes,
+            inventory_skew=inventory_skew,
+            t_remaining=t_remaining_sec,
+            only_reduce=only_reduce,
         )
         self.last_quotes = quotes
-        return quotes.bid, quotes.ask
+        return quotes
 
     async def _fetch_open_orders(self) -> list[dict]:
         """Fetch open orders for this market from CLOB."""
@@ -393,15 +492,18 @@ class BTCUpDownMM:
         except Exception as e:
             logger.warning(f"Fill sync error: {e}")
 
-    async def _place_orders(self, bid: float, ask: float) -> None:
+    async def _place_orders(self, quotes: BothSidesQuotes) -> None:
         """Place or update orders on CLOB. No-op in paper mode."""
         if self.paper:
-            q = self.last_quotes
+            q = quotes
+            only_reduce_str = " [ONLY-REDUCE]" if q.only_reduce else ""
             logger.info(
-                f"[PAPER] {self.market.question[:55]}\n"
-                f"        P_fair={q.p_fair:.4f} r={q.reservation:.4f} "
-                f"bid={bid:.4f} ask={ask:.4f} spread={q.spread:.4f} "
-                f"κ={q.kappa:.2f} σ={q.sigma:.2%} inv={self.inventory.net_yes:+.2f}"
+                f"[PAPER]{only_reduce_str} {self.market.question[:50]}\n"
+                f"  P_fair={q.p_fair:.4f} skew={q.inventory_skew:+.3f}\n"
+                f"  YES: bid={q.yes_bid:.4f} ask={q.yes_ask:.4f}\n"
+                f"  NO:  bid={q.no_bid:.4f} ask={q.no_ask:.4f}\n"
+                f"  spread={q.spread:.4f} T={q.t_remaining:.0f}s "
+                f"inv_yes={self.inventory.yes_qty:.2f} inv_no={self.inventory.no_qty:.2f}"
             )
             return
 
@@ -409,6 +511,8 @@ class BTCUpDownMM:
         await self._cancel_orders()
 
         size = self.order_size_usdc
+        bid = quotes.yes_bid
+        ask = quotes.yes_ask
 
         # Check inventory limits before placing
         if not self.inventory.is_within_limits():
@@ -444,9 +548,8 @@ class BTCUpDownMM:
                 ask_resp = await loop.run_in_executor(None, lambda: self.clob.post_order(ask_order, OrderType.GTC))
             else:
                 # No YES inventory to sell — buy NO as hedge
-                no_bid = 1.0 - ask  # complement price
-                no_bid = max(0.01, min(0.99, no_bid))
-                ask_args = OrderArgs(token_id=self.market.no_token_id, price=round(no_bid, 4), size=size, side="BUY")
+                no_bid_price = max(0.01, min(0.99, quotes.no_bid))
+                ask_args = OrderArgs(token_id=self.market.no_token_id, price=round(no_bid_price, 4), size=size, side="BUY")
                 ask_order = self.clob.create_order(ask_args)
                 ask_resp = await loop.run_in_executor(None, lambda: self.clob.post_order(ask_order, OrderType.GTC))
 
@@ -464,7 +567,7 @@ class BTCUpDownMM:
 
             self.quote_count += 1
             logger.info(
-                f"Quoted: bid={bid:.4f} ask={ask:.4f} "
+                f"Quoted: yes_bid={bid:.4f} yes_ask={ask:.4f} "
                 f"[{self.market.question[:40]}] "
                 f"inv_yes={self.inventory.net_yes:+.2f}"
             )
@@ -496,10 +599,10 @@ class BTCUpDownMM:
         inv = self.inventory
         logger.info(
             f"Status [{self.market.question[:45]}]\n"
-            f"  P_fair={q.p_fair:.4f} | bid={q.bid:.4f} ask={q.ask:.4f} "
-            f"spread={q.spread:.4f}\n"
-            f"  κ={q.kappa:.2f} σ={q.sigma:.2%} γ={q.gamma} "
-            f"T={q.t_remaining*365*24*60:.1f}min\n"
+            f"  P_fair={q.p_fair:.4f} skew={q.inventory_skew:+.3f} "
+            f"spread={q.spread:.4f} T={q.t_remaining:.0f}s\n"
+            f"  YES: bid={q.yes_bid:.4f} ask={q.yes_ask:.4f}\n"
+            f"  NO:  bid={q.no_bid:.4f} ask={q.no_ask:.4f}\n"
             f"  inv_yes={inv.yes_qty:.2f}({inv.yes_cost:.2f}$) "
             f"inv_no={inv.no_qty:.2f}({inv.no_cost:.2f}$) "
             f"net={inv.net_yes:+.3f}\n"
@@ -526,8 +629,8 @@ class BTCUpDownMM:
                 if not self.paper:
                     await self._sync_fills()
 
-                bid, ask = self.compute_quotes()
-                await self._place_orders(bid, ask)
+                quotes = self.compute_quotes()
+                await self._place_orders(quotes)
 
                 # Log status every 4 cycles
                 cycle += 1

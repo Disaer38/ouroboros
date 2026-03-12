@@ -167,22 +167,27 @@ async def run_market_mm(
 
     while time.time() < end_ts - 5:
         try:
-            # 1. Compute A-S quotes
-            bid, ask = mm.compute_quotes()
-            p_fair = mm.last_p_fair
+            # 1. Compute A-S quotes for BOTH sides
+            quotes = mm.compute_quotes()
 
-            # 2. Fetch real YES orderbook for fill simulation
-            ob_yes = await get_orderbook(http_client, market.yes_token_id)
+            # 2. Fetch BOTH orderbooks for fill simulation
+            ob_yes, ob_no = await asyncio.gather(
+                get_orderbook(http_client, market.yes_token_id),
+                get_orderbook(http_client, market.no_token_id),
+            )
 
-            # 3. Simulate fills
-            fills = engine.process_quote(market, bid, ask, p_fair, ob_yes)
+            # 3. Simulate fills on both sides
+            fills = engine.process_quote(
+                market, quotes, ob_yes, ob_no,
+                only_reduce=quotes.only_reduce,
+            )
 
-            # 4. Update MM inventory from fills (so A-S adjusts next cycle)
+            # 4. Update MM inventory from fills
             for fill in fills:
                 if fill.direction == "BUY":
-                    mm.inventory.update_buy("YES", fill.qty, fill.price)
+                    mm.inventory.update_buy(fill.side, fill.qty, fill.price)
                 else:
-                    mm.inventory.update_sell("YES", fill.qty, fill.price)
+                    mm.inventory.update_sell(fill.side, fill.qty, fill.price)
                 mm.fill_count += 1
 
             mm.quote_count += 1
@@ -227,6 +232,8 @@ def build_status_report(engine: PaperMMEngine, elapsed_min: int) -> str:
     total_quotes = sum(s.quote_count for s in states)
     total_fills = sum(len(s.fills) for s in states)
     fill_rate = total_fills / total_quotes * 100 if total_quotes else 0
+    total_yes_fills = sum(sum(1 for f in s.fills if f.side == "YES") for s in states)
+    total_no_fills = sum(sum(1 for f in s.fills if f.side == "NO") for s in states)
 
     open_states = [s for s in states if not s.resolved]
     resolved_states = [s for s in states if s.resolved]
@@ -236,7 +243,7 @@ def build_status_report(engine: PaperMMEngine, elapsed_min: int) -> str:
         f"🤖 <b>Paper MM — {elapsed_min}m report</b>",
         "",
         f"📈 Total P&amp;L: <b>{sign}${total_pnl:.4f}</b>",
-        f"🔄 Quotes: {total_quotes} | Fills: {total_fills} ({fill_rate:.1f}%)",
+        f"🔄 Quotes: {total_quotes} | Fills: {total_fills} (YES:{total_yes_fills} NO:{total_no_fills}) ({fill_rate:.1f}%)",
         f"📊 Markets: {len(resolved_states)} resolved, {len(open_states)} open",
     ]
 
