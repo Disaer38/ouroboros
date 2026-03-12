@@ -1,54 +1,106 @@
 {
   "trader": "0x70ec235a31eb35f243e2618d6ea3b5b8962bbb5d",
-  "analyzed_at": "2026-03-12T19:47:13.490866",
-  "portfolio_value": 13159.8967699085,
-  "stats": {
-    "total_trades": 2384,
-    "total_markets": 24,
-    "both_sides_markets": 24,
-    "both_sides_pct": 100.0,
-    "ladder_count": 48,
-    "ladder_markets_with_wide_spread": 45,
-    "avg_trades_per_side": 49.666666666666664,
-    "time_windows_covered": 6,
-    "asset_distribution": {
-      "BTC": 1281,
-      "XRP": 208,
-      "ETH": 440,
-      "SOL": 455
+  "window": "Last 1 hour",
+  "n_trades": 590,
+  "n_markets": 42,
+  "both_sides_count": 35,
+  "both_sides_pct": 83.3,
+  "neg_risk_rounds": 9,
+  "neg_risk_examples": [
+    {
+      "title": "Bitcoin Up or Down - March 12, 3:30PM-3:35PM ET",
+      "avg_up": 0.637,
+      "avg_down": 0.166,
+      "profit_pct": 19.64
     },
-    "asset_usdc_volume": {
-      "BTC": 8950.38,
-      "XRP": 1143.32,
-      "ETH": 3823.47,
-      "SOL": 2960.26
+    {
+      "title": "Bitcoin Up or Down - March 12, 3:10PM-3:15PM ET",
+      "avg_up": 0.429,
+      "avg_down": 0.416,
+      "profit_pct": 15.48
     },
-    "avg_trade_usdc": 7.08,
-    "max_trade_usdc": 174.6,
-    "total_usdc_volume": 16877.43,
-    "price_distribution": {
-      "low_prob_<30pct": 660,
-      "mid_prob_30-70pct": 1342,
-      "high_prob_>70pct": 382
+    {
+      "title": "Solana Up or Down - March 12, 3:45PM-3:50PM ET",
+      "avg_up": 0.45,
+      "avg_down": 0.405,
+      "profit_pct": 14.5
     },
-    "current_unrealized_pnl": 158.21,
-    "winning_positions": 17,
-    "losing_positions": 17,
-    "hedged_markets_now": 16
+    {
+      "title": "Solana Up or Down - March 12, 3:10PM-3:15PM ET",
+      "avg_up": 0.09,
+      "avg_down": 0.77,
+      "profit_pct": 14.0
+    },
+    {
+      "title": "Solana Up or Down - March 12, 3:05PM-3:10PM ET",
+      "avg_up": 0.463,
+      "avg_down": 0.51,
+      "profit_pct": 2.69
+    }
+  ],
+  "ladder_count": 57,
+  "ladder_examples": [
+    {
+      "title": "Bitcoin Up or Down - March 12, 3:10PM-3:15PM ",
+      "side": "up",
+      "n": 19,
+      "min_p": 0.09,
+      "max_p": 0.92,
+      "spread": 0.83
+    },
+    {
+      "title": "XRP Up or Down - March 12, 3:10PM-3:15PM ET",
+      "side": "up",
+      "n": 9,
+      "min_p": 0.16,
+      "max_p": 0.962,
+      "spread": 0.802
+    },
+    {
+      "title": "Bitcoin Up or Down - March 12, 3:10PM-3:15PM ",
+      "side": "down",
+      "n": 15,
+      "min_p": 0.01,
+      "max_p": 0.8,
+      "spread": 0.79
+    },
+    {
+      "title": "Bitcoin Up or Down - March 12, 3:05PM-3:10PM ",
+      "side": "up",
+      "n": 21,
+      "min_p": 0.151,
+      "max_p": 0.937,
+      "spread": 0.785
+    },
+    {
+      "title": "Solana Up or Down - March 12, 3:40PM-3:45PM E",
+      "side": "down",
+      "n": 13,
+      "min_p": 0.03,
+      "max_p": 0.799,
+      "spread": 0.769
+    }
+  ],
+  "asset_trades": {
+    "BTC": 206,
+    "SOL": 158,
+    "XRP": 132,
+    "ETH": 94
   },
-  "strategy": {
-    "name": "DUAL-SIDE MARKET MAKER / LIQUIDITY PROVIDER",
-    "description": "Trader buys BOTH Up and Down outcomes in the same market simultaneously. This is not directional betting \u2014 it is market making. By providing liquidity on both sides, he profits from the spread (the fact that Up+Down < $1.00).",
-    "key_behaviors": [
-      "Enters both sides in 100% of markets",
-      "Uses ladder/DCA approach: multiple small orders at different price levels",
-      "Focuses on 5-minute BTC/ETH/SOL/XRP intraday markets",
-      "High-frequency: covers many 5-min windows per session",
-      "Avg trade size: $7.08 USDC",
-      "Total volume analyzed: $16877.43 USDC"
-    ],
-    "edge_source": "The edge comes from the SPREAD. In a 5-min Up/Down market, if Up = 0.25 and Down = 0.75, buying both costs $1.00 (no edge). But if the market is inefficient \u2014 e.g., Up = 0.18, Down = 0.79 (sum = 0.97) \u2014 buying BOTH guarantees $1.00 payout for $0.97 cost = 3% risk-free profit. This is a classic arbitrage on market inefficiency.",
-    "risk_profile": "Low-medium. The strategy profits regardless of which side wins, as long as the entry spread is favorable. Risk: market becomes efficient before full position is built.",
-    "replication_difficulty": "MEDIUM \u2014 requires fast execution and spread monitoring"
-  }
+  "asset_usdc": {
+    "BTC": 5985.23,
+    "ETH": 2670.57,
+    "SOL": 2328.86,
+    "XRP": 1879.4
+  },
+  "price_dist": {
+    "low_pct": 14.2,
+    "mid_pct": 62.4,
+    "high_pct": 23.4
+  },
+  "avg_usdc": 21.8,
+  "max_usdc": 175.5,
+  "total_usdc": 12864.07,
+  "windows_5min": 11,
+  "span_minutes": 54.5
 }

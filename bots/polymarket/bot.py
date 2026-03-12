@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -154,11 +155,22 @@ async def run_live(
     once: bool = False,
 ) -> None:
     """
-    Live trading loop.
+    Live trading loop using CLOB client (Dominant Side + Insurance strategy).
 
     Requires POLYMARKET_PRIVATE_KEY environment variable.
     """
+    from py_clob_client.clob_types import OrderArgs, OrderType
     from .auth import get_client as get_clob_client
+    from .strategy_sourdough import (
+        SourdoughOpportunity,
+        OpenPosition,
+        PositionTracker,
+        fetch_active_5min_markets,
+        scan_for_opportunities,
+        BASE_SIZE_USDC,
+        MAX_OPEN_POSITIONS,
+        MAX_DAILY_LOSS_USDC,
+    )
 
     clob = get_clob_client()
     if not clob:
@@ -168,37 +180,115 @@ async def run_live(
         )
         sys.exit(1)
 
-    print(f"\n🚨 LIVE TRADING MODE")
-    print(f"   Max position: ${max_position:.0f} | Max exposure: ${max_exposure:.0f}")
-    print(f"   Profit threshold: {profit_threshold}")
-    print()
+    tracker = PositionTracker()
+    logger.info("Live trading started (Dominant Side + Insurance / vague-sourdough)")
 
-    async with httpx.AsyncClient() as http:
-        while True:
-            markets = await discover_markets(http)
-            if not markets:
-                print("No markets. Waiting...")
-                if once:
-                    break
-                await asyncio.sleep(interval)
+    while True:
+        try:
+            # 1. Expire old positions
+            tracker.resolve_expired()
+
+            # 2. Check daily loss limit
+            if tracker.daily_pnl <= -MAX_DAILY_LOSS_USDC:
+                logger.warning(f"Daily loss limit reached (${tracker.daily_pnl:.2f}). Pausing 1h.")
+                await asyncio.sleep(3600)
+                tracker.daily_pnl = 0.0
                 continue
 
-            opportunities = await scan_all(
-                http,
-                markets,
-                profit_threshold=profit_threshold,
-                min_depth_usdc=min_depth,
-            )
+            # 3. Enforce max open positions
+            if tracker.count_open() >= MAX_OPEN_POSITIONS:
+                logger.info(f"Max positions open ({MAX_OPEN_POSITIONS}). Waiting...")
+                await asyncio.sleep(10)
+                continue
 
-            for opp in opportunities:
-                # TODO: execute via CLOB API using clob client
-                # This is the paper-to-live bridge — implement after paper testing
-                logger.info(f"[LIVE TODO] Would trade: {opp.market.question[:50]}")
+            # 4. Scan for opportunities
+            markets = fetch_active_5min_markets()
+            opps = scan_for_opportunities(markets)
+
+            if not opps:
+                logger.debug("No opportunities found. Sleeping 15s.")
+                await asyncio.sleep(15)
+                if once:
+                    break
+                continue
+
+            # Take best opportunity (highest dominant price = most asymmetric)
+            opp = max(opps, key=lambda o: o.dominant_price)
+            logger.info(f"Opportunity: {opp}")
+
+            # 5. Place dominant side order
+            dominant_shares = BASE_SIZE_USDC / opp.dominant_price
+            dom_args = OrderArgs(
+                token_id=opp.dominant_token_id,
+                price=round(opp.dominant_price, 3),
+                size=round(dominant_shares, 4),
+                side="BUY",
+            )
+            dom_order = clob.create_order(dom_args)
+            dom_resp = clob.post_order(dom_order, OrderType.FOK)
+            dom_order_id = dom_resp.get("orderID") if isinstance(dom_resp, dict) else str(dom_resp)
+            logger.info(f"Dominant order placed: {dom_order_id} | {opp.dominant_side} @ {opp.dominant_price:.3f} x {dominant_shares:.2f}")
+
+            # 6. Place insurance order (smaller)
+            insurance_usdc = BASE_SIZE_USDC * 0.20
+            insurance_shares = insurance_usdc / opp.insurance_price
+            ins_args = OrderArgs(
+                token_id=opp.insurance_token_id,
+                price=round(opp.insurance_price, 3),
+                size=round(insurance_shares, 4),
+                side="BUY",
+            )
+            ins_order = clob.create_order(ins_args)
+            ins_resp = clob.post_order(ins_order, OrderType.FOK)
+            ins_order_id = ins_resp.get("orderID") if isinstance(ins_resp, dict) else str(ins_resp)
+            logger.info(f"Insurance order placed: {ins_order_id} | {opp.insurance_side} @ {opp.insurance_price:.3f} x {insurance_shares:.2f}")
+
+            # 7. Track position
+            pos = OpenPosition(
+                opportunity=opp,
+                dominant_order_id=dom_order_id,
+                insurance_order_id=ins_order_id,
+                dominant_cost=BASE_SIZE_USDC,
+                insurance_cost=insurance_usdc,
+            )
+            tracker.add(pos)
+            logger.info(f"Position tracked. {tracker.summary()}")
+
+            # 8. Log trade for record keeping
+            _log_live_trade(opp, dom_order_id, ins_order_id)
 
             if once:
                 break
 
-            await asyncio.sleep(interval)
+            await asyncio.sleep(20)
+
+        except KeyboardInterrupt:
+            logger.info("Live trading stopped by user.")
+            break
+        except Exception as e:
+            logger.error(f"Live loop error: {e}", exc_info=True)
+            await asyncio.sleep(10)
+
+
+def _log_live_trade(opp, dom_order_id: str, ins_order_id: str) -> None:
+    """Log a live trade to a JSONL file for record keeping."""
+    log_path = os.path.join(os.path.dirname(__file__), "live_trades.jsonl")
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "condition_id": opp.condition_id,
+        "question": opp.question,
+        "dominant_side": opp.dominant_side,
+        "dominant_price": opp.dominant_price,
+        "insurance_side": opp.insurance_side,
+        "insurance_price": opp.insurance_price,
+        "dom_order_id": dom_order_id,
+        "ins_order_id": ins_order_id,
+    }
+    try:
+        with open(log_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception as e:
+        logger.warning(f"Failed to log live trade: {e}")
 
 
 def _log_opportunities(opportunities: list, path: str) -> None:
