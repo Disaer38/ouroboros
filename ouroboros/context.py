@@ -98,17 +98,17 @@ def _build_memory_sections(memory: Memory) -> List[str]:
     sections = []
 
     scratchpad_raw = memory.load_scratchpad()
-    sections.append("## Scratchpad\n\n" + clip_text(scratchpad_raw, 90000))
+    sections.append("## Scratchpad\n\n" + clip_text(scratchpad_raw, 20000))
 
     identity_raw = memory.load_identity()
-    sections.append("## Identity\n\n" + clip_text(identity_raw, 80000))
+    sections.append("## Identity\n\n" + clip_text(identity_raw, 10000))
 
     # Dialogue summary (key moments from chat history)
     summary_path = memory.drive_root / "memory" / "dialogue_summary.md"
     if summary_path.exists():
         summary_text = read_text(summary_path)
         if summary_text.strip():
-            sections.append("## Dialogue Summary\n\n" + clip_text(summary_text, 20000))
+            sections.append("## Dialogue Summary\n\n" + clip_text(summary_text, 8000))
 
     return sections
 
@@ -118,25 +118,25 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
     sections = []
 
     chat_summary = memory.summarize_chat(
-        memory.read_jsonl_tail("chat.jsonl", 50))
+        memory.read_jsonl_tail("chat.jsonl", 30))
     if chat_summary:
         sections.append("## Recent chat\n\n" + chat_summary)
 
-    progress_entries = memory.read_jsonl_tail("progress.jsonl", 50)
+    progress_entries = memory.read_jsonl_tail("progress.jsonl", 20)
     if task_id:
         progress_entries = [e for e in progress_entries if e.get("task_id") == task_id]
     progress_summary = memory.summarize_progress(progress_entries, limit=10)
     if progress_summary:
         sections.append("## Recent progress\n\n" + progress_summary)
 
-    tools_entries = memory.read_jsonl_tail("tools.jsonl", 50)
+    tools_entries = memory.read_jsonl_tail("tools.jsonl", 10)
     if task_id:
         tools_entries = [e for e in tools_entries if e.get("task_id") == task_id]
     tools_summary = memory.summarize_tools(tools_entries)
     if tools_summary:
         sections.append("## Recent tools\n\n" + tools_summary)
 
-    events_entries = memory.read_jsonl_tail("events.jsonl", 50)
+    events_entries = memory.read_jsonl_tail("events.jsonl", 30)
     if task_id:
         events_entries = [e for e in events_entries if e.get("task_id") == task_id]
     events_summary = memory.summarize_events(events_entries)
@@ -144,7 +144,7 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
         sections.append("## Recent events\n\n" + events_summary)
 
     supervisor_summary = memory.summarize_supervisor(
-        memory.read_jsonl_tail("supervisor.jsonl", 50))
+        memory.read_jsonl_tail("supervisor.jsonl", 15))
     if supervisor_summary:
         sections.append("## Supervisor\n\n" + supervisor_summary)
 
@@ -220,7 +220,7 @@ def _build_health_invariants(env: Any) -> str:
     try:
         import hashlib
         msg_hash_to_tasks: Dict[str, set] = {}
-        tail_bytes = 256_000
+        tail_bytes = 64_000
 
         def _scan_file_for_injected(path, type_field="type", type_value="owner_message_injected"):
             if not path.exists():
@@ -327,7 +327,7 @@ def build_llm_messages(
     else:
         static_text = base_prompt + "\n\n" + "## BIBLE.md\n\n" + clip_text(bible_md, 180000) + "\n\n"
     if needs_full_context:
-        static_text += "## README.md\n\n" + clip_text(readme_md, 180000)
+        static_text += "## README.md\n\n" + clip_text(readme_md, 8000)
 
     # Semi-stable content: identity, scratchpad, knowledge
     # These change ~once per task, not per round
@@ -338,13 +338,24 @@ def build_llm_messages(
     if kb_index_path.exists():
         kb_index = kb_index_path.read_text(encoding="utf-8")
         if kb_index.strip():
-            semi_stable_parts.append("## Knowledge base\n\n" + clip_text(kb_index, 50000))
+            semi_stable_parts.append("## Knowledge base\n\n" + clip_text(kb_index, 4000))
 
     semi_stable_text = "\n\n".join(semi_stable_parts)
 
     # Dynamic content: changes every round
+    # Strip bulky numeric fields from state before injecting — they waste tokens
+    try:
+        _sd = json.loads(state_json)
+        for _k in ("spent_tokens_prompt", "spent_tokens_completion", "spent_tokens_cached",
+                   "budget_messages_since_report", "session_total_snapshot", "session_spent_snapshot",
+                   "openrouter_total_usd", "openrouter_daily_usd", "openrouter_last_check_at",
+                   "budget_drift_pct", "spent_calls", "evolution_consecutive_failures"):
+            _sd.pop(_k, None)
+        state_json = json.dumps(_sd, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
     dynamic_parts = [
-        "## Drive state\n\n" + clip_text(state_json, 90000),
+        "## Drive state\n\n" + clip_text(state_json, 8000),
         _build_runtime_section(env, task),
     ]
 
