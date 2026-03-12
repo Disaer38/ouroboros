@@ -126,6 +126,32 @@ acct = Account.from_key("0xYOUR_KEY")
 print(acct.address)  # Send USDC/MATIC to this address on Polygon
 ```
 
+## Proxy / Geo-Bypass
+
+Polymarket blocks trading from some regions (US, UK, Netherlands, etc.).
+Set `POLYMARKET_PROXY_URL` to route all API traffic through a proxy:
+
+```bash
+# HTTP proxy
+POLYMARKET_PROXY_URL=http://user:pass@proxy-host:8080
+
+# SOCKS5 (local DNS)
+POLYMARKET_PROXY_URL=socks5://user:pass@1.2.3.4:1080
+
+# SOCKS5h (remote DNS — recommended for anonymity)
+POLYMARKET_PROXY_URL=socks5h://user:pass@proxy-host:1080
+```
+
+Check your proxy's geo-location before starting:
+```bash
+POLYMARKET_PROXY_URL=socks5://... python -m bots.polymarket.proxy
+```
+
+Recommended regions (low latency to Polymarket CLOB):
+- 🏆 Ireland / AWS eu-west-1 (~10-15ms to London CLOB)
+- Germany / Frankfurt (~20ms)
+- Netherlands (~20ms) — check if blocked first
+
 ## Market Maker Strategy (Avellaneda-Stoikov)
 
 The `run_mm.py` entry point runs a dynamic market maker on BTC binary option markets.

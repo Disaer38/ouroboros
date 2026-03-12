@@ -278,8 +278,8 @@ class PaperMMEngine:
                 return state.no_long_qty > 0
 
         # ── YES side ──────────────────────────────────────────────────────────
-        yes_best_ask = ob_yes.best_ask()
-        yes_best_bid = ob_yes.best_bid()
+        yes_best_ask = ob_yes.best_ask
+        yes_best_bid = ob_yes.best_bid
 
         # YES BID FILL: our bid >= market ask → we BUY YES
         if quotes.yes_bid >= yes_best_ask and yes_best_ask > 0 and _allows_buy("YES"):
@@ -320,8 +320,8 @@ class PaperMMEngine:
                 )
 
         # ── NO side ───────────────────────────────────────────────────────────
-        no_best_ask = ob_no.best_ask()
-        no_best_bid = ob_no.best_bid()
+        no_best_ask = ob_no.best_ask
+        no_best_bid = ob_no.best_bid
 
         # NO BID FILL: our no_bid >= market NO ask → we BUY NO
         if quotes.no_bid >= no_best_ask and no_best_ask > 0 and _allows_buy("NO"):

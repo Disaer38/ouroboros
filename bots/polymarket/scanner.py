@@ -249,8 +249,8 @@ async def check_neg_risk(
         logger.debug(f"Orderbook fetch failed for {market.question[:40]}: {e}")
         return None
 
-    yes_ask = ob_yes.best_ask()
-    no_ask = ob_no.best_ask()
+    yes_ask = ob_yes.best_ask
+    no_ask = ob_no.best_ask
 
     # Sanity check: prices must be in (0, 1)
     if not (0 < yes_ask < 1 and 0 < no_ask < 1):

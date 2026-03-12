@@ -26,8 +26,8 @@ import requests
 logger = logging.getLogger(__name__)
 
 # Default κ for thin binary prediction markets (empirical: 5-min BTC markets)
-DEFAULT_KAPPA = 1.5
-DEFAULT_A = 10.0  # arrival rate constant (orders per unit time)
+DEFAULT_KAPPA = 50.0
+DEFAULT_A = 200.0  # arrival rate constant (orders per unit time)
 
 WINDOW_SIZE = 100  # rolling window of fill observations
 POLYMARKET_DATA_API = "https://data-api.polymarket.com"
@@ -150,7 +150,7 @@ class KappaEstimator:
 
         if not filled:
             # No fills observed → use wider default (high κ)
-            return min(self.default_kappa * 2, 5.0)
+            return min(self.default_kappa * 2, 200.0)
 
         fill_rate = len(filled) / len(obs)
         avg_spread = sum(o.spread_from_mid for o in obs) / len(obs)
@@ -192,6 +192,6 @@ class KappaEstimator:
         # A spread of 0.10 with ~50% fill rate implies κ ≈ -ln(0.5)/0.05 ≈ 13.8
         # A spread of 0.40 with ~50% fill rate implies κ ≈ -ln(0.5)/0.20 ≈ 3.5
         implied_kappa = -math.log(0.5) / max(observed_spread / 2, 0.001)
-        implied_kappa = max(0.5, min(8.0, implied_kappa))
+        implied_kappa = max(5.0, min(200.0, implied_kappa))
         self.default_kappa = implied_kappa
         logger.debug(f"κ prior updated from spread {observed_spread:.3f}: κ_prior={implied_kappa:.2f}")

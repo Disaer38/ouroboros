@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from .proxy import build_httpx_client, check_geo, get_proxy_url
 from .fair_price import bootstrap_from_klines, get_btc_state
 from .paper_mm import PaperMMEngine
 from .scanner import discover_markets, get_orderbook
@@ -321,7 +322,21 @@ async def main(
         print("Bootstrapping Binance price data...")
         bootstrap_from_klines()
 
-    async with httpx.AsyncClient() as client:
+    proxy_url = get_proxy_url()
+    if proxy_url:
+        geo = await check_geo(proxy_url)
+        print(f"🌍 Proxy active: {geo.get('ip')} / {geo.get('country')} / {geo.get('city')}")
+        pm_blocked = geo.get("polymarket_blocked")
+        if pm_blocked is True:
+            print(f"🚫 WARNING: Polymarket BLOCKED in this country ({geo.get('polymarket_country')})")
+            print("   Change POLYMARKET_PROXY_URL or disable proxy.")
+        elif pm_blocked is False:
+            print(f"✅ Polymarket ALLOWED from proxy location")
+    else:
+        print("⚠️  No proxy configured. Running from local IP.")
+        print("   Set POLYMARKET_PROXY_URL=socks5://... for geo bypass.")
+
+    async with build_httpx_client(proxy_url) as client:
         await send_telegram(
             client,
             f"▶️ <b>Paper MM started</b>\n"

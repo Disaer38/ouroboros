@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from .proxy import build_httpx_client, get_proxy_url
 from .paper_trader import PaperTrader
 from .scanner import discover_markets, scan_all, _is_intraday
 
@@ -78,7 +79,7 @@ async def run_paper(
         "opportunities.jsonl",
     )
 
-    async with httpx.AsyncClient() as client:
+    async with build_httpx_client(get_proxy_url()) as client:
         while True:
             scan_count += 1
             ts = datetime.now(timezone.utc).strftime("%H:%M:%S")

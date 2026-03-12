@@ -31,9 +31,11 @@ class Orderbook:
     asks: list      # list of (price: float, size: float)
     timestamp: datetime = field(default_factory=_now)
 
+    @property
     def best_bid(self) -> float:
         return max((p for p, _ in self.bids), default=0.0)
 
+    @property
     def best_ask(self) -> float:
         return min((p for p, _ in self.asks), default=1.0)
 

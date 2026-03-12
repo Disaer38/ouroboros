@@ -18,8 +18,10 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-BINANCE_URL = "https://api.binance.com/api/v3/ticker/price"
-BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_URL = "https://api.binance.us/api/v3/ticker/price"
+BINANCE_KLINES_URL = "https://api.binance.us/api/v3/klines"
+KRAKEN_URL = "https://api.kraken.com/0/public/Ticker"
+KRAKEN_KLINES_URL = "https://api.kraken.com/0/public/OHLC"
 SYMBOL = "BTCUSDT"
 VOLATILITY_WINDOW = 20   # number of price samples for rolling σ
 MOMENTUM_HISTORY_SIZE = 300  # max (ts, price) pairs stored for momentum (≈50min at 10s/sample)
@@ -86,10 +88,47 @@ class PriceState:
 _state = PriceState()
 
 
+def bootstrap_from_kraken_ohlc(symbol: str = "XBTUSD", interval: int = 1, limit: int = 20) -> bool:
+    """
+    Seed price history from Kraken OHLC data.
+    Call as fallback when Binance bootstrap fails.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        resp = requests.get(
+            KRAKEN_KLINES_URL,
+            params={"pair": symbol, "interval": interval},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        result = resp.json()["result"]
+        # Kraken OHLC entry: [time, open, high, low, close, vwap, volume, count]
+        entries = result["XXBTZUSD"][-limit:]
+        now = time.time()
+        n = len(entries)
+        for i, entry in enumerate(entries):
+            close_price = float(entry[4])
+            approx_ts = now - (n - 1 - i) * interval * 60.0
+            _state.prices.append(close_price)
+            _state.momentum_history.append((approx_ts, close_price))
+            _state.last_price = close_price
+        _state.last_fetch_ts = now
+        logger.info(
+            f"Bootstrapped from Kraken OHLC with {n} candles. "
+            f"σ_annual={_state.sigma_annualized():.2%} | last_price=${_state.last_price:,.0f}"
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to bootstrap from Kraken OHLC: {e}")
+        return False
+
+
 def bootstrap_from_klines(symbol: str = SYMBOL, interval: str = "1m", limit: int = 20) -> bool:
     """
     Seed price history from Binance klines (1-minute candles).
     Call once at startup to immediately have meaningful σ and momentum history.
+    Falls back to Kraken OHLC if Binance fails.
 
     Returns True on success, False on failure.
     """
@@ -118,15 +157,35 @@ def bootstrap_from_klines(symbol: str = SYMBOL, interval: str = "1m", limit: int
         )
         return True
     except Exception as e:
-        logger.warning(f"Failed to bootstrap from klines: {e}")
-        return False
+        logger.warning(f"Failed to bootstrap from Binance klines: {e}")
+        logger.info("Falling back to Kraken OHLC for bootstrap")
+        return bootstrap_from_kraken_ohlc(limit=limit)
+
+
+def fetch_btc_price_kraken(timeout: float = 5.0) -> Optional[float]:
+    """Fetch current BTC/USD price from Kraken REST."""
+    try:
+        resp = requests.get(KRAKEN_URL, params={"pair": "XBTUSD"}, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        price = float(data["result"]["XXBTZUSD"]["c"][0])
+        now = time.time()
+        _state.prices.append(price)
+        _state.momentum_history.append((now, price))
+        _state.last_price = price
+        _state.last_fetch_ts = now
+        return price
+    except Exception as e:
+        logger.warning(f"Kraken price fetch failed: {e}")
+        return None
 
 
 def fetch_btc_price(timeout: float = 5.0) -> Optional[float]:
-    """Fetch current BTC/USDT price from Binance REST."""
+    """Fetch current BTC/USDT price from Binance REST, falling back to Kraken."""
     try:
         resp = requests.get(BINANCE_URL, params={"symbol": SYMBOL}, timeout=timeout)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            raise ValueError(f"Binance returned status {resp.status_code}")
         price = float(resp.json()["price"])
         now = time.time()
         _state.prices.append(price)
@@ -136,7 +195,8 @@ def fetch_btc_price(timeout: float = 5.0) -> Optional[float]:
         return price
     except Exception as e:
         logger.warning(f"Binance price fetch failed: {e}")
-        return _state.last_price if _state.last_price > 0 else None
+        logger.info("Falling back to Kraken for price fetch")
+        return fetch_btc_price_kraken(timeout=timeout)
 
 
 def norm_cdf(x: float) -> float:
