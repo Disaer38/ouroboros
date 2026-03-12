@@ -171,6 +171,7 @@ async def run_mm(
 
             # Run all selected MMs concurrently until they expire
             tasks = []
+            mms = []
             for m in selected:
                 try:
                     mm = BTCUpDownMM(
@@ -181,12 +182,23 @@ async def run_mm(
                         requote_interval=requote_interval,
                         paper=not live,
                     )
+                    mms.append(mm)
                     tasks.append(asyncio.create_task(mm.run()))
                 except Exception as e:
                     logger.error(f"Failed to start MM for {m.question[:40]}: {e}")
 
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Print aggregate PnL summary
+            total_realized = sum(mm.inventory.realized_pnl for mm in mms)
+            total_quotes = sum(mm.quote_count for mm in mms)
+            total_fills = sum(mm.fill_count for mm in mms)
+            logger.info(
+                f"Cycle complete: {len(mms)} markets | "
+                f"total_quotes={total_quotes} total_fills={total_fills} | "
+                f"realized_pnl={total_realized:+.4f} USDC"
+            )
 
             if once:
                 break

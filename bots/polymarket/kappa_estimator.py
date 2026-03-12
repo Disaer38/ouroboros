@@ -5,9 +5,12 @@ Dynamic kappa (κ) estimator for Avellaneda-Stoikov market making.
 Higher κ → fills drop off fast (liquid market, need tight spreads).
 Lower κ → fills stay reasonable even at wider spreads (thin market).
 
-We estimate κ from the rolling history of our own quote placements
-vs. actual fills. When no history is available, we use a market-adaptive
-default based on observed bid-ask spread width.
+We estimate κ from:
+1. Rolling history of our own quote placements vs actual fills.
+2. Bootstrap from Polymarket public trade history (arrival rate estimation).
+3. Observed market spread as a soft prior.
+
+When no history is available, use empirical default for binary prediction markets.
 """
 from __future__ import annotations
 
@@ -18,13 +21,16 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
+import requests
+
 logger = logging.getLogger(__name__)
 
-# Default κ for thin binary prediction markets (empirical)
+# Default κ for thin binary prediction markets (empirical: 5-min BTC markets)
 DEFAULT_KAPPA = 1.5
 DEFAULT_A = 10.0  # arrival rate constant (orders per unit time)
 
-WINDOW_SIZE = 50  # rolling window of fill observations
+WINDOW_SIZE = 100  # rolling window of fill observations
+POLYMARKET_DATA_API = "https://data-api.polymarket.com"
 
 
 @dataclass
@@ -48,6 +54,7 @@ class KappaEstimator:
         self.observations: deque[FillObservation] = deque(maxlen=WINDOW_SIZE)
         self._cached_kappa: Optional[float] = None
         self._cache_ts: float = 0.0
+        self._bootstrapped: bool = False
 
     def record_fill(self, spread_from_mid: float, filled: bool) -> None:
         """Record whether a quote at distance δ from mid was filled."""
@@ -57,6 +64,74 @@ class KappaEstimator:
         ))
         self._cached_kappa = None  # invalidate cache
 
+    def record_order_fill(self, quote_price: float, mid_price: float, filled: bool) -> None:
+        """
+        Record fill outcome from a placed order.
+
+        Computes δ = |quote_price - mid_price| and records it.
+        """
+        delta = abs(quote_price - mid_price)
+        self.record_fill(spread_from_mid=delta, filled=filled)
+
+    def bootstrap_from_polymarket(self, token_id: str, limit: int = 100) -> bool:
+        """
+        Bootstrap κ from Polymarket public trade history for a token.
+
+        Uses the Data API to fetch recent trades and estimate the arrival rate.
+        We infer κ by computing how trades are distributed around the mid price.
+
+        Returns True if successfully bootstrapped, False otherwise.
+        """
+        if self._bootstrapped:
+            return True
+        try:
+            resp = requests.get(
+                f"{POLYMARKET_DATA_API}/trades",
+                params={"asset_id": token_id, "limit": limit},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            trades = resp.json()
+
+            if not trades or len(trades) < 5:
+                logger.debug(f"Too few trades for κ bootstrap: {len(trades) if trades else 0}")
+                return False
+
+            # Extract prices to compute rolling mid
+            prices = [float(t.get("price", 0)) for t in trades if t.get("price")]
+            if len(prices) < 5:
+                return False
+
+            # Compute rolling mid from recent trade prices
+            mid = sum(prices[:20]) / min(20, len(prices))
+
+            # Treat each trade as a "fill at distance δ from mid"
+            deltas = [abs(p - mid) for p in prices if 0 < p < 1]
+
+            if not deltas:
+                return False
+
+            # Bootstrap: inject synthetic filled observations
+            # All trade-records are fills (they completed) at their respective δ
+            for delta in deltas[:50]:  # limit synthetic bootstrap size
+                self.observations.append(FillObservation(
+                    spread_from_mid=max(0.001, delta),
+                    filled=True,
+                    timestamp=time.time(),
+                ))
+
+            self._bootstrapped = True
+            kappa = self.estimate_kappa()
+            logger.info(
+                f"κ bootstrapped from {len(deltas)} Polymarket trades: "
+                f"κ={kappa:.3f} | mid={mid:.4f}"
+            )
+            return True
+
+        except Exception as e:
+            logger.warning(f"Polymarket κ bootstrap failed: {e}")
+            return False
+
     def estimate_kappa(self) -> float:
         """
         Estimate κ from recorded observations.
@@ -64,22 +139,17 @@ class KappaEstimator:
         Falls back to default_kappa if insufficient data.
         """
         # Return cached value if fresh (< 30s)
-        if self._cached_kappa and (time.time() - self._cache_ts) < 30:
+        if self._cached_kappa is not None and (time.time() - self._cache_ts) < 30:
             return self._cached_kappa
 
         obs = list(self.observations)
         if len(obs) < 10:
             return self.default_kappa
 
-        # Group by spread buckets and compute fill rate per bucket
-        # Simple approach: use each observation directly
-        # κ ≈ -ln(fill_rate) / mean_spread where fill_rate = filled_count / total
         filled = [o for o in obs if o.filled]
-        unfilled = [o for o in obs if not o.filled]
 
         if not filled:
-            # No fills observed → market is very liquid or spreads are too wide
-            # Use wider default (high κ = fills only at very tight spreads)
+            # No fills observed → use wider default (high κ)
             return min(self.default_kappa * 2, 5.0)
 
         fill_rate = len(filled) / len(obs)
@@ -88,8 +158,9 @@ class KappaEstimator:
         if fill_rate <= 0 or avg_spread <= 0:
             return self.default_kappa
 
+        # κ = -ln(fill_rate) / avg_spread
         kappa = -math.log(fill_rate) / avg_spread
-        kappa = max(0.1, min(10.0, kappa))  # clamp to reasonable range
+        kappa = max(0.1, min(10.0, kappa))
 
         self._cached_kappa = kappa
         self._cache_ts = time.time()
@@ -120,9 +191,7 @@ class KappaEstimator:
         """
         # A spread of 0.10 with ~50% fill rate implies κ ≈ -ln(0.5)/0.05 ≈ 13.8
         # A spread of 0.40 with ~50% fill rate implies κ ≈ -ln(0.5)/0.20 ≈ 3.5
-        # Use as a soft prior: inject synthetic observations
         implied_kappa = -math.log(0.5) / max(observed_spread / 2, 0.001)
         implied_kappa = max(0.5, min(8.0, implied_kappa))
-        # Override default if observed spread suggests different regime
         self.default_kappa = implied_kappa
         logger.debug(f"κ prior updated from spread {observed_spread:.3f}: κ_prior={implied_kappa:.2f}")
