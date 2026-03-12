@@ -4,12 +4,15 @@ Paper trading engine for Polymarket neg-risk arbitrage.
 Simulates trade execution and tracks P&L without real money.
 All trades are logged to Google Drive for review.
 
-P&L accounting:
-  - cost = (yes_ask + no_ask) * size * (1 + fee_rate)^2
-    (taker fee applied to each side independently)
-  - payout = size * 1.0  (one side always wins $1/share)
+P&L accounting for neg-risk strategy:
+  - You buy YES + NO tokens for the same market
+  - Exactly one side always pays $1/share at resolution
+  - Total payout = shares × $1.00  (guaranteed, regardless of outcome)
+  - cost = shares × (yes_ask × (1+fee) + no_ask × (1+fee))
   - profit = payout - cost
-  - pnl_pct = profit / cost * 100
+  - pnl_pct = profit / cost × 100
+
+Taker fee (2%) is applied independently to each side's fill.
 """
 import json
 import logging
@@ -21,7 +24,7 @@ from .models import ArbOpportunity, PaperTrade
 
 logger = logging.getLogger(__name__)
 
-# Polymarket taker fee per side
+# Polymarket taker fee per side (2%)
 TAKER_FEE = 0.02
 
 
@@ -112,16 +115,16 @@ class PaperTrader:
             logger.info(f"Trade too small (size={raw_size:.2f}): skipping")
             return None
 
-        # Size is in USDC. Shares = size / total_cost
-        # e.g., $5 invested at YES=0.48, NO=0.48 → ~5.21 shares (5/0.96)
+        # raw_size is USDC to deploy. Shares = raw_size / total_cost_per_share
+        # where total_cost_per_share = yes_ask + no_ask (before fees)
         shares = raw_size / opportunity.total_cost
 
-        # Apply taker fee to each side
+        # Taker fee applied to each side independently
         yes_cost = opportunity.yes_ask * shares * (1 + TAKER_FEE)
         no_cost = opportunity.no_ask * shares * (1 + TAKER_FEE)
         total_cost = yes_cost + no_cost
 
-        # Expected payout: shares × $1 (one side always wins)
+        # Neg-risk payout: exactly one side pays $1/share regardless of outcome
         payout = shares * 1.0
         expected_profit = payout - total_cost
         expected_pnl_pct = expected_profit / total_cost * 100
@@ -152,20 +155,27 @@ class PaperTrader:
         )
         return trade
 
-    def resolve_trade(self, trade: PaperTrade, won: bool) -> None:
+    def resolve_trade(self, trade: PaperTrade, won: bool = True) -> None:
         """
-        Mark a trade as resolved (market has ended).
+        Mark a trade as resolved.
+
+        For neg-risk strategy: won=True means one side paid $1/share (normal outcome).
+        This should ALWAYS be True for neg-risk — both YES and NO are held,
+        so one side always wins. The `won` parameter exists for edge cases
+        (e.g., market cancelled/resolved invalid → $0 payout).
 
         Args:
-            won: True if trade was profitable (one side paid out $1/share),
-                 False if somehow both sides lost (shouldn't happen with neg-risk,
-                 but useful for testing).
+            won: True (default) → payout = shares × $1.00 (standard neg-risk outcome)
+                 False → payout = $0 (only for cancelled/invalid markets)
         """
         if trade.resolved:
             return
 
         trade.resolved = True
         trade.resolved_at = datetime.now(timezone.utc)
+
+        # Neg-risk: one side ALWAYS wins → payout = shares × $1.00
+        # The 'won' flag handles the rare case of a cancelled/invalid market
         trade.actual_payout = trade.expected_payout if won else 0.0
         trade.actual_profit = trade.actual_payout - trade.cost
         trade.actual_pnl_pct = trade.actual_profit / trade.cost * 100
