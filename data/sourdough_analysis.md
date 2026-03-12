@@ -1,8 +1,8 @@
 # 🔬 vague-sourdough Strategy Analysis
 
-> Generated: 2026-03-12 19:53:03 UTC
+> Generated: 2026-03-12 19:53:14 UTC
 > Address: `0x70ec235a31eb35f243e2618d6ea3b5b8962bbb5d`
-> Window: Last 1.0 hour(s)
+> Window: Last 12.0 hour(s)
 
 ---
 
@@ -10,16 +10,16 @@
 
 | Metric | Value |
 |--------|-------|
-| Total Trades | **678** |
-| Unique Markets | **51** |
-| Total Volume (USDC) | **$14,649.84** |
-| Trades/minute | **11.3** |
-| Avg time between trades | **23.2s** |
+| Total Trades | **3,500** |
+| Unique Markets | **267** |
+| Total Volume (USDC) | **$79,096.74** |
+| Trades/minute | **4.9** |
+| Avg time between trades | **24.0s** |
 | Markets with positive spread | **0/0** |
 
 ## 🧠 Strategy Pattern Breakdown
 
-- **DIRECTIONAL_BUY** (51 markets, 100%): 📈 Directional Buy — one-way position, no exit observed in window.
+- **DIRECTIONAL_BUY** (267 markets, 100%): 📈 Directional Buy — one-way position, no exit observed in window.
 
 ---
 
@@ -27,46 +27,46 @@
 
 | Market | Trades | Volume | Buy→Sell | Spread | Avg Gap | Pattern |
 |--------|--------|--------|----------|--------|---------|---------|
-| Will Joe Biden get Coronavirus before the ele | 29 | $856.0 | 29→0 | — | 9.6s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 21 | $853.9 | 21→0 | — | 12.1s | DIRECTIONAL_BUY |
+| 0x53ccaf3c12ab054df3c45296c7c8d9bd94bf6b9f777 | 42 | $1839.3 | 42→0 | — | 7.2s | DIRECTIONAL_BUY |
+| 0xcbd28c057aab6519dbfa39a0c5db61b9d8d788e022d | 27 | $1632.2 | 27→0 | — | 8.7s | DIRECTIONAL_BUY |
+| 0x085d84338fbe7649aa9874949856672784077958405 | 29 | $1162.9 | 29→0 | — | 9.0s | DIRECTIONAL_BUY |
+| 0xd881df86c8294e634ae8e7333c0d45c0e0f5f17a78a | 17 | $1129.3 | 17→0 | — | 13.8s | DIRECTIONAL_BUY |
+| 0xc84acf7a5b27fe3280344cf00a162670c07d9dd69f5 | 57 | $1053.1 | 57→0 | — | 5.2s | DIRECTIONAL_BUY |
+| Will Joe Biden get Coronavirus before the ele | 25 | $993.5 | 25→0 | — | 10.7s | DIRECTIONAL_BUY |
+| 0xbd32ba017574f15ccd1a774d7f2c09fe83c1aa4f249 | 24 | $906.2 | 24→0 | — | 11.1s | DIRECTIONAL_BUY |
+| 0x321b04ca276642edc9d749e0fdba3842e6c0326afc0 | 16 | $889.5 | 16→0 | — | 19.1s | DIRECTIONAL_BUY |
+| 0x5b5543b9145783f8b208b7f92392ee65b8c7db569d1 | 22 | $871.1 | 22→0 | — | 11.9s | DIRECTIONAL_BUY |
+| 0x8ee6237383ad1a08f0d1ac034e25e14e535a2fafc64 | 24 | $856.2 | 24→0 | — | 12.5s | DIRECTIONAL_BUY |
+| 0x6c0cd93b5f78535f6b033ea22d024fc47a0c7aaad04 | 29 | $856.0 | 29→0 | — | 9.6s | DIRECTIONAL_BUY |
+| 0x23c872ec19951356b29f8e6922aeddd25088a986723 | 21 | $853.9 | 21→0 | — | 12.1s | DIRECTIONAL_BUY |
+| 0xbcfc916a77fc786e0fcbc7d440784b6db6ce80c0ed0 | 24 | $850.7 | 24→0 | — | 11.8s | DIRECTIONAL_BUY |
+| 0xbc1c1cc557fb8e45d4aaf71c9a68feb4625b094d79b | 31 | $850.0 | 31→0 | — | 8.6s | DIRECTIONAL_BUY |
+| 0x4087b30d88cd1b4e2b765680a8fbd2f9ac2a16d08f3 | 26 | $834.9 | 26→0 | — | 8.2s | DIRECTIONAL_BUY |
+| 0x6ca49fd41cf9b4bf36f7e3a5a575f91c7c1ea2ee312 | 16 | $779.5 | 16→0 | — | 5.5s | DIRECTIONAL_BUY |
+| 0x0ab8298de5caa36487dd8fa31106ca3e490345e0c23 | 27 | $772.8 | 27→0 | — | 11.3s | DIRECTIONAL_BUY |
+| 0x661766ebec5a01f28941a21ec9cee094a4a6d4c8b89 | 23 | $755.6 | 23→0 | — | 11.6s | DIRECTIONAL_BUY |
 | 0xc0708f1695e3772553469ceefc05f21299c03c2d25c | 34 | $747.8 | 34→0 | — | 9.0s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 24 | $637.8 | 24→0 | — | 6.5s | DIRECTIONAL_BUY |
+| 0x810d73f2b7a4f816ed1a2c35a539e72367d429782df | 19 | $725.8 | 19→0 | — | 13.3s | DIRECTIONAL_BUY |
+| Will Joe Biden get Coronavirus before the ele | 19 | $713.8 | 19→0 | — | 6.9s | DIRECTIONAL_BUY |
+| 0xcc51674315efe8905ee6af460c0aba28120b63381cc | 25 | $710.1 | 25→0 | — | 12.2s | DIRECTIONAL_BUY |
+| 0x615f0ff1ecb47a728125592db7a983473fd60cfc070 | 14 | $704.6 | 14→0 | — | 19.9s | DIRECTIONAL_BUY |
+| 0x360c01da2a52426e5190669ff2423cf226b02e8e9fb | 18 | $701.0 | 18→0 | — | 10.2s | DIRECTIONAL_BUY |
+| 0xb1ea721534ebb283da6b4319b71d32de7139681cd59 | 15 | $681.5 | 15→0 | — | 10.3s | DIRECTIONAL_BUY |
+| Will Joe Biden get Coronavirus before the ele | 35 | $677.8 | 35→0 | — | 4.7s | DIRECTIONAL_BUY |
+| 0xc1783dd54e533620f713fd689a17ffb8e799322bf51 | 21 | $660.9 | 21→0 | — | 8.8s | DIRECTIONAL_BUY |
+| 0x0b1eec5eccea5a24a35290fa54541b5c6ae2cc4c42a | 24 | $637.8 | 24→0 | — | 6.5s | DIRECTIONAL_BUY |
 | 0x7ceb0853c55fdc8dbf45d6ce26bb58c3e50487b05c8 | 21 | $635.5 | 21→0 | — | 14.3s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 31 | $599.7 | 31→0 | — | 9.3s | DIRECTIONAL_BUY |
+| 0x35d1bf65f872d5be321888e8816c6e61b4177ebf960 | 31 | $599.7 | 31→0 | — | 9.3s | DIRECTIONAL_BUY |
+| 0x06b9f131aec289d875ad7c74dae09dc8a28b81757e9 | 16 | $599.0 | 16→0 | — | 15.7s | DIRECTIONAL_BUY |
 | 0xc471749ac333c6effce09d6ae5bd3d6ffbedb5dd1d0 | 18 | $586.8 | 18→0 | — | 15.5s | DIRECTIONAL_BUY |
+| Will Joe Biden get Coronavirus before the ele | 12 | $583.3 | 12→0 | — | 8.0s | DIRECTIONAL_BUY |
+| Will Joe Biden get Coronavirus before the ele | 12 | $578.3 | 12→0 | — | 14.7s | DIRECTIONAL_BUY |
+| 0xc37258bfea874bac38905b3032f6885edc36161c435 | 28 | $568.6 | 28→0 | — | 10.7s | DIRECTIONAL_BUY |
+| Will Joe Biden get Coronavirus before the ele | 37 | $561.3 | 37→0 | — | 7.2s | DIRECTIONAL_BUY |
+| 0x438734e2c073f19487b5940c171172c4f1a6ff6de0f | 17 | $560.4 | 17→0 | — | 13.6s | DIRECTIONAL_BUY |
 | 0xf7ad6946a138d4ccc5b84c71a412cd4c6a7d6cbb328 | 19 | $557.4 | 19→0 | — | 16.2s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 21 | $548.4 | 21→0 | — | 5.0s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 15 | $532.5 | 15→0 | — | 13.7s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 16 | $516.5 | 16→0 | — | 18.4s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 21 | $501.8 | 21→0 | — | 14.7s | DIRECTIONAL_BUY |
-| 0xa50588dc022b283ea971d141c385923621312087c2b | 14 | $480.4 | 14→0 | — | 20.6s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 21 | $458.6 | 21→0 | — | 11.3s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 23 | $447.0 | 23→0 | — | 9.8s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 28 | $446.5 | 28→0 | — | 9.6s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 30 | $404.2 | 30→0 | — | 9.5s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 17 | $352.8 | 17→0 | — | 10.0s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 27 | $315.5 | 27→0 | — | 6.2s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 17 | $307.8 | 17→0 | — | 16.1s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 12 | $265.1 | 12→0 | — | 23.4s | DIRECTIONAL_BUY |
-| 0x4ec9a926c02be8c951a0aae714b66fb8160cb5c7f21 | 19 | $259.4 | 19→0 | — | 14.2s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 6 | $256.8 | 6→0 | — | 9.2s | DIRECTIONAL_BUY |
-| 0xd53552f02c5bb75d57aec3c400464fb9507444b8e5a | 11 | $241.5 | 11→0 | — | 12.6s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 15 | $227.7 | 15→0 | — | 17.7s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 10 | $227.5 | 10→0 | — | 7.1s | DIRECTIONAL_BUY |
-| 0x51a33c132cad97f57ec061b88fbce96c55487376e2d | 7 | $221.7 | 7→0 | — | 30.3s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 10 | $220.0 | 10→0 | — | 13.8s | DIRECTIONAL_BUY |
-| 0xc77b55ecc45d4f3287200b77c9003e6954932ca9434 | 14 | $200.9 | 14→0 | — | 18.1s | DIRECTIONAL_BUY |
-| 0xa4571d10ef017c76a497d26e892c1f4452b7a8b4499 | 3 | $160.8 | 3→0 | — | 30.0s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 6 | $141.9 | 6→0 | — | 44.4s | DIRECTIONAL_BUY |
-| 0x2448ca4251ebc06bcc17c62b7af9d9b8aa7e4bbbdc7 | 12 | $139.8 | 12→0 | — | 23.4s | DIRECTIONAL_BUY |
-| 0x1373d467296d93a95b05e03a12591685004c265deda | 10 | $128.9 | 10→0 | — | 16.2s | DIRECTIONAL_BUY |
-| 0x9090283632168f549876314587d244b4ba40ef07af5 | 12 | $124.7 | 12→0 | — | 7.6s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 9 | $103.9 | 9→0 | — | 4.8s | DIRECTIONAL_BUY |
-| 0xf76d0d966388510b1d61e93f58419e11f4dd3aa2a99 | 4 | $95.2 | 4→0 | — | 57.3s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 10 | $94.5 | 10→0 | — | 19.1s | DIRECTIONAL_BUY |
-| 0xc601bc1e333386be5d475651ca0bfb54a7d9343f912 | 3 | $89.3 | 3→0 | — | 6.0s | DIRECTIONAL_BUY |
-| 0x2847f8ec70a31a77b32525e48f163ee4f8d7074951c | 9 | $83.9 | 9→0 | — | 9.0s | DIRECTIONAL_BUY |
-| Will Joe Biden get Coronavirus before the ele | 3 | $78.3 | 3→0 | — | 26.0s | DIRECTIONAL_BUY |
+| 0x75195939e84b25aa0b6874cd8fb0a42f7fcf902ceb2 | 21 | $548.4 | 21→0 | — | 5.0s | DIRECTIONAL_BUY |
+| 0x4ee0c54f7cb8ffd8179dedd7ce515899195ce9c3cd9 | 16 | $547.1 | 16→0 | — | 15.2s | DIRECTIONAL_BUY |
 
 ---
 
@@ -77,7 +77,7 @@
 The bot is aggressively buying one side. This suggests either:
 1. It has predictive signal (sentiment, technical) about the outcome
 2. It's accumulating before a late exit (prices have moved in its favor)
-3. The sell-side exits happened outside the 1h window
+3. The sell-side exits happened outside the 12h window
 
 Recommend extending analysis window to see full entry→exit cycle.
 
