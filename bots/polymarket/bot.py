@@ -66,7 +66,7 @@ async def run_paper(
     )
 
     print(f"\n🤖 Polymarket Paper Trader")
-    print(f"   Strategy: neg-risk (YES+NO < {profit_threshold})")
+    print(f"   Strategy: neg-risk BTC-only (YES+NO < {profit_threshold})")
     print(f"   Max position: ${max_position:.0f} | Max exposure: ${max_exposure:.0f}")
     print(f"   Scan interval: {interval}s {'(single scan)' if once else ''}")
     print()

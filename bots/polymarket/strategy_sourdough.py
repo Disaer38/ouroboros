@@ -43,7 +43,7 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
 
 # 5-min crypto market slug patterns
-CRYPTO_5MIN_SLUGS = ["btc-up-or-down-5m", "eth-up-or-down-5m"]
+CRYPTO_5MIN_SLUGS = ["btc-up-or-down-5m"]
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ def fetch_active_5min_markets() -> list[dict]:
         for m in markets:
             slug = str(m.get("slug", "") or m.get("marketSlug", ""))
             q = str(m.get("question", "")).lower()
-            if "5m" in slug or "5-min" in slug or "5 min" in q:
+            if ("5m" in slug or "5-min" in slug or "5 min" in q) and ("btc" in q or "bitcoin" in q):
                 result.append(m)
         return result
     except Exception as e:

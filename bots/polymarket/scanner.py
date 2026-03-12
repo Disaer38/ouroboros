@@ -30,15 +30,16 @@ CLOB_API = "https://clob.polymarket.com"
 # Matches intraday time ranges like "3:00PM-3:05PM", "3:00PM-3:15PM"
 TIME_RANGE_RE = re.compile(r"\d+:\d+[AP]M[-–]\d+:\d+[AP]M", re.IGNORECASE)
 
-CRYPTO_KEYWORDS = ["bitcoin", "btc", "ethereum", "eth"]
+CRYPTO_KEYWORDS = ["bitcoin", "btc"]
+BTC_ONLY = True
 
 
 def _is_target_market(question: str) -> bool:
-    """Return True if this market is a crypto Up/Down market we want to track."""
+    """Return True if this is a BTC Up/Down market."""
     q = question.lower()
-    has_crypto = any(kw in q for kw in CRYPTO_KEYWORDS)
+    is_btc = "bitcoin" in q or "btc" in q
     has_updown = "up or down" in q
-    return has_crypto and has_updown
+    return is_btc and has_updown
 
 
 def _is_intraday(question: str) -> bool:
