@@ -118,14 +118,14 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
     sections = []
 
     chat_summary = memory.summarize_chat(
-        memory.read_jsonl_tail("chat.jsonl", 30))
+        memory.read_jsonl_tail("chat.jsonl", 15))
     if chat_summary:
         sections.append("## Recent chat\n\n" + chat_summary)
 
-    progress_entries = memory.read_jsonl_tail("progress.jsonl", 20)
+    progress_entries = memory.read_jsonl_tail("progress.jsonl", 8)
     if task_id:
         progress_entries = [e for e in progress_entries if e.get("task_id") == task_id]
-    progress_summary = memory.summarize_progress(progress_entries, limit=10)
+    progress_summary = memory.summarize_progress(progress_entries, limit=8)
     if progress_summary:
         sections.append("## Recent progress\n\n" + progress_summary)
 
@@ -136,7 +136,7 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
     if tools_summary:
         sections.append("## Recent tools\n\n" + tools_summary)
 
-    events_entries = memory.read_jsonl_tail("events.jsonl", 30)
+    events_entries = memory.read_jsonl_tail("events.jsonl", 12)
     if task_id:
         events_entries = [e for e in events_entries if e.get("task_id") == task_id]
     events_summary = memory.summarize_events(events_entries)
@@ -144,7 +144,7 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
         sections.append("## Recent events\n\n" + events_summary)
 
     supervisor_summary = memory.summarize_supervisor(
-        memory.read_jsonl_tail("supervisor.jsonl", 15))
+        memory.read_jsonl_tail("supervisor.jsonl", 3))
     if supervisor_summary:
         sections.append("## Supervisor\n\n" + supervisor_summary)
 
@@ -320,7 +320,7 @@ def build_llm_messages(
     # BIBLE.md is embedded inside SYSTEM.md — skip double-inclusion to save tokens.
     # Only add it separately when SYSTEM.md does NOT already contain it.
     # README.md only for evolution/review (architecture context)
-    needs_full_context = task_type in ("evolution", "review", "scheduled")
+    needs_full_context = task_type in ("evolution", "review")
     bible_in_system = "## BIBLE.md" in base_prompt or "# BIBLE.md" in base_prompt
     if bible_in_system:
         static_text = base_prompt + "\n\n"

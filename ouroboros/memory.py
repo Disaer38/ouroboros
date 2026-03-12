@@ -159,9 +159,9 @@ class Memory:
             ts_hhmm = ts_full[11:16] if len(ts_full) >= 16 else ""
             raw_text = str(e.get("text", ""))
             if dir_raw in ("out", "outgoing"):
-                text = short(raw_text, 800)
+                text = short(raw_text, 400)
             else:
-                text = short(raw_text, 400)  # truncate large creator pastes
+                text = short(raw_text, 200)  # truncate large creator pastes
             lines.append(f"{direction} {ts_hhmm} {text}")
         return "\n".join(lines)
 
