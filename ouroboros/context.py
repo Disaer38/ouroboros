@@ -118,25 +118,25 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
     sections = []
 
     chat_summary = memory.summarize_chat(
-        memory.read_jsonl_tail("chat.jsonl", 200))
+        memory.read_jsonl_tail("chat.jsonl", 50))
     if chat_summary:
         sections.append("## Recent chat\n\n" + chat_summary)
 
-    progress_entries = memory.read_jsonl_tail("progress.jsonl", 200)
+    progress_entries = memory.read_jsonl_tail("progress.jsonl", 50)
     if task_id:
         progress_entries = [e for e in progress_entries if e.get("task_id") == task_id]
-    progress_summary = memory.summarize_progress(progress_entries, limit=15)
+    progress_summary = memory.summarize_progress(progress_entries, limit=10)
     if progress_summary:
         sections.append("## Recent progress\n\n" + progress_summary)
 
-    tools_entries = memory.read_jsonl_tail("tools.jsonl", 200)
+    tools_entries = memory.read_jsonl_tail("tools.jsonl", 50)
     if task_id:
         tools_entries = [e for e in tools_entries if e.get("task_id") == task_id]
     tools_summary = memory.summarize_tools(tools_entries)
     if tools_summary:
         sections.append("## Recent tools\n\n" + tools_summary)
 
-    events_entries = memory.read_jsonl_tail("events.jsonl", 200)
+    events_entries = memory.read_jsonl_tail("events.jsonl", 50)
     if task_id:
         events_entries = [e for e in events_entries if e.get("task_id") == task_id]
     events_summary = memory.summarize_events(events_entries)
@@ -144,7 +144,7 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
         sections.append("## Recent events\n\n" + events_summary)
 
     supervisor_summary = memory.summarize_supervisor(
-        memory.read_jsonl_tail("supervisor.jsonl", 200))
+        memory.read_jsonl_tail("supervisor.jsonl", 50))
     if supervisor_summary:
         sections.append("## Supervisor\n\n" + supervisor_summary)
 
@@ -317,15 +317,17 @@ def build_llm_messages(
     # Block 2: Semi-stable content (identity + scratchpad + knowledge) — cached
     # Block 3: Dynamic content (state + runtime + recent logs) — uncached
 
-    # BIBLE.md always included (Constitution requires it for every decision)
+    # BIBLE.md is embedded inside SYSTEM.md — skip double-inclusion to save tokens.
+    # Only add it separately when SYSTEM.md does NOT already contain it.
     # README.md only for evolution/review (architecture context)
     needs_full_context = task_type in ("evolution", "review", "scheduled")
-    static_text = (
-        base_prompt + "\n\n"
-        + "## BIBLE.md\n\n" + clip_text(bible_md, 180000)
-    )
+    bible_in_system = "## BIBLE.md" in base_prompt or "# BIBLE.md" in base_prompt
+    if bible_in_system:
+        static_text = base_prompt + "\n\n"
+    else:
+        static_text = base_prompt + "\n\n" + "## BIBLE.md\n\n" + clip_text(bible_md, 180000) + "\n\n"
     if needs_full_context:
-        static_text += "\n\n## README.md\n\n" + clip_text(readme_md, 180000)
+        static_text += "## README.md\n\n" + clip_text(readme_md, 180000)
 
     # Semi-stable content: identity, scratchpad, knowledge
     # These change ~once per task, not per round
