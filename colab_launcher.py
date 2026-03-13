@@ -15,14 +15,19 @@ log = logging.getLogger(__name__)
 # ----------------------------
 def install_launcher_deps() -> None:
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "openai>=1.0.0", "requests"],
+        [sys.executable, "-m", "pip", "install", "-q", "openai>=1.0.0", "requests", "playwright"],
         check=True,
     )
     # Playwright browsers are not persisted across Colab sessions — reinstall on every boot.
+    # playwright CLI is now guaranteed available (installed above via pip).
     try:
         subprocess.run(["playwright", "install", "chromium"], check=False, capture_output=True)
     except FileNotFoundError:
-        pass  # playwright CLI not available, skip silently
+        # Fallback: use python -m playwright if the CLI entry point isn't on PATH yet
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=False, capture_output=True,
+        )
 
 install_launcher_deps()
 
