@@ -1,739 +1,613 @@
-# Polymarket High-Frequency Arbitrage Bot — Architecture
+# Polymarket Negative Risk Arbitrage Bot — System Architecture
 
-> **Strategy**: Negative Risk Arbitrage on 5-minute BTC/ETH binary markets.  
-> **Target**: Replicate `guh123` (Wry-Leaker) — $3,900/day, 13.5 trades/min.  
-> **Stack**: Python (primary) for direct `py-clob-client` integration.
-
----
-
-## Table of Contents
-
-1. [Strategy Math](#1-strategy-math)
-2. [System Overview](#2-system-overview)
-3. [Component Breakdown](#3-component-breakdown)
-   - [3.1 Market Registry](#31-market-registry)
-   - [3.2 Ingestion Layer (WebSocket + REST)](#32-ingestion-layer-websocket--rest)
-   - [3.3 Opportunity Scanner](#33-opportunity-scanner)
-   - [3.4 Execution Engine](#34-execution-engine)
-   - [3.5 Position Tracker](#35-position-tracker)
-   - [3.6 Logger / Telemetry](#36-logger--telemetry)
-4. [Data Flow](#4-data-flow)
-5. [Fee Structure & Profitability Model](#5-fee-structure--profitability-model)
-6. [Tech Stack](#6-tech-stack)
-7. [Configuration Reference](#7-configuration-reference)
-8. [Deployment](#8-deployment)
+> Version: 1.0.0  
+> Strategy: Negative Risk Arbitrage (primary) + Market Making (secondary)  
+> Target: `btc-updown-5m-*`, `eth-updown-5m-*`  
+> Language: Python 3.11+ / asyncio  
+> SDK: `py-clob-client`
 
 ---
 
-## 1. Strategy Math
+## Executive Summary
 
-### 1.1 Core Invariant
+Наблюдения за трейдером guh123 (3,500+ трейдов за 4.33 часа, $164K+ прибыли за 6 недель) подтверждают:
 
-In a binary market with outcomes **Up** and **Down**, exactly one side pays $1.00 at resolution. If:
+- **Стратегия**: покупка обеих сторон (`UP` + `DOWN`) когда `best_ask(UP) + best_ask(DOWN) < 1.00 - fees`
+- **Темп**: ~13.5 трейдов/мин
+- **Фокус**: 100% BTC/ETH, 85.5% на 5-минутных рынках
+- **Паттерн позиции**: равное количество шер (shares) на обе стороны, не равные доллары
 
-```
-ask_up + ask_down < 1.00
-```
-
-…buying both sides guarantees a **risk-free profit** regardless of outcome.
-
-### 1.2 Profit Formula
-
-```
-gross_profit = 1.00 - ask_up - ask_down           # per share pair
-net_profit   = gross_profit - total_fees          # after all costs
-```
-
-For a trade of `N` shares on each side:
-
-```
-P&L = N × (1.00 - ask_up - ask_down - fee_per_share_up - fee_per_share_down)
-```
-
-### 1.3 Fee Structure
-
-Polymarket CLOB fees (2026):
-
-| Fee Type         | Rate       | Notes                              |
-|------------------|------------|------------------------------------|
-| Taker fee        | **2%**     | Applied to notional (price × size) |
-| Maker fee        | **0%**     | Post-Only orders get 0% fee        |
-| Neg-risk fee     | **0%**     | No fee for neg-risk merge          |
-| Gas              | ~$0        | Gasless relayer (meta-tx)          |
-
-**Effective cost per leg (taker)**:
-
-```
-fee_up   = ask_up  × size × 0.02
-fee_down = ask_down × size × 0.02
-
-total_fee_rate = (ask_up + ask_down) × 0.02
-```
-
-**Break-even condition** (minimum profitable spread):
-
-```
-ask_up + ask_down < 1.00 / (1 + 0.02 + 0.02)
-ask_up + ask_down < 1.00 / 1.04
-ask_up + ask_down < 0.9615
-```
-
-In practice, use a safety buffer:
-
-```
-MIN_ENTRY_SUM = 0.950   # leaves ~1% net margin after 2% taker on each side
-```
-
-### 1.4 Per-Trade Example
-
-```
-ask_up   = 0.21   (21¢)
-ask_down = 0.72   (72¢)
-sum      = 0.93   ← below 0.950 threshold ✓
-
-size     = 20 shares each
-
-gross_profit = (1.00 - 0.93) × 20 = $1.40
-fees         = (0.21 × 20 × 0.02) + (0.72 × 20 × 0.02) = $0.084 + $0.288 = $0.372
-net_profit   = $1.40 - $0.372 = $1.028  ← ~3.5% on $29.40 deployed
-```
-
-### 1.5 Equal-Shares vs Equal-Dollar Sizing
-
-guh123 uses **equal shares** (same number of shares both sides), not equal dollars.
-
-```
-# Equal shares — guaranteed symmetric payoff
-size = min(available_up, available_down, MAX_SIZE)
-cost = ask_up × size + ask_down × size
-
-# Locked profit (regardless of outcome)
-locked_pnl = (1.00 - ask_up - ask_down - fees_rate) × size
-```
-
-This ensures exactly 1 side always pays — and the payout on that side fully covers costs + profit.
-
-### 1.6 Time Dynamics
-
-Markets close at expiry. Spread **widens** as expiry approaches:
-
-```
-spread(T_rem) ≈ 0.700 - 0.122 × T_rem_minutes
-```
-
-- At T=5min: spread ≈ 9.6% (thin)
-- At T=1min: spread ≈ 54% (huge)
-
-**Implication**: Opportunities appear throughout the market's life, but become more abundant near expiry. The bot must act on **any** window where sum < threshold.
+Математика: если `P_up + P_down = 0.96`, то покупая обе стороны за **$0.96**, получаем гарантированный payoff **$1.00** → прибыль **4.17%** независимо от исхода.
 
 ---
 
-## 2. System Overview
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        POLYMARKET ARB BOT                       │
-│                                                                  │
-│  ┌──────────────┐    ┌────────────────┐    ┌─────────────────┐  │
-│  │  Market       │    │   Ingestion    │    │   Opportunity   │  │
-│  │  Registry     │───▶│   Layer        │───▶│   Scanner       │  │
-│  │  (Gamma API)  │    │   (WS + REST)  │    │   (Math Core)   │  │
-│  └──────────────┘    └────────────────┘    └────────┬────────┘  │
-│                                                       │          │
-│                              ┌────────────────────────▼──────┐  │
-│                              │      Execution Engine         │  │
-│                              │   (py-clob-client, async)     │  │
-│                              └────────────────────────┬──────┘  │
-│                                                        │         │
-│  ┌──────────────────────┐    ┌───────────────────────▼──────┐  │
-│  │  Position Tracker    │◀───│      CLOB API / Relayer       │  │
-│  │  (in-memory + disk)  │    │  (clob.polymarket.com)        │  │
-│  └──────────────────────┘    └──────────────────────────────┘  │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                 Logger / Telemetry                        │   │
-│  │       (JSONL on disk, Telegram alerts, metrics)          │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 3. Component Breakdown
-
-### 3.1 Market Registry
-
-**Purpose**: Discover and track all active 5m/15m BTC/ETH markets.
-
-**Source**: Gamma API — `https://gamma-api.polymarket.com/markets`
-
-**Poll interval**: Every 30 seconds (new markets spawn continuously).
-
-**Filter criteria**:
-```python
-ACTIVE_SLUGS = re.compile(r'(btc|eth)-updown-(5m|15m)-\d+')
-conditions:
-  - active == True
-  - NOT expired
-  - end_date_iso > now + 10s  (don't enter markets about to close)
-```
-
-**Output**: Dict `{ condition_id → MarketMeta }` shared across components.
-
-```python
-@dataclass
-class MarketMeta:
-    condition_id: str          # CLOB market ID
-    slug: str                  # e.g. "btc-updown-5m-1741840500"
-    asset: str                 # "BTC" | "ETH"
-    timeframe: str             # "5m" | "15m"
-    token_up: str              # token_id for Up outcome
-    token_down: str            # token_id for Down outcome
-    expires_at: datetime       # resolution time
-    is_active: bool
-```
-
-### 3.2 Ingestion Layer (WebSocket + REST)
-
-**Purpose**: Maintain real-time orderbook state for all active markets.
-
-#### 3.2.1 WebSocket (primary)
-
-- **Endpoint**: `wss://ws-subscriptions-clob.polymarket.com/ws/market`
-- **Subscribe**: One subscription per `condition_id` (or batch subscribe)
-- **Events received**:
-  - `book` — full orderbook snapshot
-  - `price_change` — incremental update
-
-```python
-# Subscribe message
-{
-  "type": "subscribe",
-  "channel": "market",
-  "market": "<condition_id>"
-}
-
-# Received event (book update)
-{
-  "event_type": "book",
-  "market": "<condition_id>",
-  "bids": [{"price": "0.72", "size": "150"}, ...],
-  "asks": [{"price": "0.74", "size": "200"}, ...]
-}
-```
-
-**Local state**: In-memory `OrderBook` per market, keyed by `token_id`.
-
-```python
-@dataclass
-class OrderBook:
-    token_id: str
-    bids: SortedDict[float, float]  # price → size
-    asks: SortedDict[float, float]
-    updated_at: float               # Unix timestamp
-
-    def best_ask(self) -> tuple[float, float]:
-        """Returns (price, available_size) of best ask."""
-        return min(self.asks.items())
-```
-
-#### 3.2.2 REST Fallback
-
-- **Endpoint**: `GET https://clob.polymarket.com/book?token_id={token_id}`
-- Used on: WebSocket disconnect, initial bootstrap, gap-fill.
-- Poll interval: 500ms per market (only when WS is down).
-
-#### 3.2.3 Reconnect Strategy
-
-```
-WS disconnect → wait 250ms → reconnect with exponential backoff (max 5s)
-On reconnect → REST snapshot all active markets → resume WS
-```
-
-### 3.3 Opportunity Scanner
-
-**Purpose**: Continuously evaluate orderbooks and emit trading signals.
-
-**Trigger**: Every time an orderbook update arrives (event-driven, not polling).
-
-**Algorithm**:
-
-```python
-def scan(market: MarketMeta, books: dict[str, OrderBook]) -> Signal | None:
-    book_up   = books[market.token_up]
-    book_down = books[market.token_down]
-
-    ask_up,   size_up   = book_up.best_ask()
-    ask_down, size_down = book_down.best_ask()
-
-    combined = ask_up + ask_down
-
-    if combined >= MIN_ENTRY_SUM:        # 0.950
-        return None
-
-    # How much can we trade?
-    tradeable = min(size_up, size_down, MAX_SIZE)  # 24 shares max
-
-    if tradeable < MIN_SIZE:             # 5 shares min
-        return None
-
-    # Time filter — don't enter with < 10s remaining
-    t_rem = (market.expires_at - datetime.utcnow()).total_seconds()
-    if t_rem < 10:
-        return None
-
-    # Expected profit
-    fee_rate  = (ask_up + ask_down) * 0.02 * 2   # taker on both legs
-    net_margin = 1.00 - combined - fee_rate
-    if net_margin <= 0:
-        return None
-
-    return Signal(
-        market=market,
-        ask_up=ask_up,     size_up=tradeable,
-        ask_down=ask_down, size_down=tradeable,
-        combined=combined,
-        net_margin=net_margin,
-        t_remaining=t_rem,
-    )
-```
-
-**Deduplication**: Track `last_signal_at[condition_id]`. Suppress repeat signals within 1 second for the same market.
-
-### 3.4 Execution Engine
-
-**Purpose**: Place orders for both legs of an opportunity, as close to simultaneously as possible.
-
-#### 3.4.1 Order Type
-
-Use **FAK (Fill and Kill) limit orders** at the ask price.
-
-- FAK fills what's available at that price or better, cancels the rest.
-- Guarantees no resting open orders (avoids stale exposure).
-- Equivalent to aggressive limit order / market order with price protection.
-
-```python
-order_up = {
-    "token_id":   market.token_up,
-    "price":      ask_up,
-    "size":       size,
-    "side":       "BUY",
-    "order_type": "FAK",
-}
-order_down = {
-    "token_id":   market.token_down,
-    "price":      ask_down,
-    "size":       size,
-    "side":       "BUY",
-    "order_type": "FAK",
-}
-```
-
-#### 3.4.2 Parallel Execution
-
-Both legs placed concurrently using `asyncio.gather`:
-
-```python
-async def execute(signal: Signal) -> ExecutionResult:
-    async with self.rate_limiter:   # max 10 req/s
-        results = await asyncio.gather(
-            self.clob.place_order(signal.order_up),
-            self.clob.place_order(signal.order_down),
-            return_exceptions=True
-        )
-    return ExecutionResult(up=results[0], down=results[1])
-```
-
-#### 3.4.3 Partial Fill Handling
-
-If one leg fills and the other fails/partial:
-
-```python
-if filled_up > 0 and filled_down == 0:
-    # Leg imbalance — we have naked Up position
-    # Options:
-    # 1. Retry Down leg immediately (best case)
-    # 2. Log as "orphan position" — hold to expiry (50/50 outcome)
-    # 3. Cancel Up leg if possible (only if limit order not yet filled)
-    await handle_orphan(market, filled_up, side="UP")
-```
-
-Strategy for orphan: **retry once** within 500ms, then **hold to expiry** (since it's a binary outcome, it's not a loss per se — just not delta-neutral).
-
-#### 3.4.4 Rate Limiting
-
-```
-Polymarket API limit: ~10 requests/second (conservative estimate)
-Bot target:           13.5 trades/min = 0.225 trades/sec (far below limit)
-Safety margin:        max 5 order pairs/sec burst
-```
-
-Implemented as token bucket with 10 tokens/sec refill rate.
-
-#### 3.4.5 Capital Guard
-
-```python
-MAX_DEPLOYED_USDC  = 5_000    # max capital at risk at any time
-MAX_PER_MARKET     = 200      # max per single market entry
-MAX_ORDER_SIZE     = 24       # max shares per leg (matches guh123)
-MIN_ORDER_SIZE     = 5        # minimum economically viable
-DAILY_LOSS_LIMIT   = -500     # halt if daily PnL < this
-```
-
-### 3.5 Position Tracker
-
-**Purpose**: Track all open positions and completed trades.
-
-**State**: In-memory dict + JSONL persistence.
-
-```python
-@dataclass
-class Position:
-    condition_id: str
-    market_slug:  str
-    entry_time:   datetime
-    expires_at:   datetime
-    size:         float           # shares (equal on both sides)
-    cost_up:      float           # USDC paid for Up leg
-    cost_down:    float           # USDC paid for Down leg
-    total_cost:   float           # cost_up + cost_down
-    locked_pnl:   float           # expected net profit
-    status:       str             # "open" | "resolved" | "orphan"
-    fill_up:      float | None    # actual fill price
-    fill_down:    float | None
-```
-
-**Resolution**: On market expiry, fetch result via Gamma API. Mark position as resolved. Calculate actual PnL.
-
-**PnL Reconciliation**: Every 15 minutes, reconcile in-memory state against CLOB `/positions` endpoint.
-
-### 3.6 Logger / Telemetry
-
-**Purpose**: Full audit trail, real-time monitoring, alerts.
-
-#### Log Streams (JSONL files)
-
-| File                      | Content                          | Rotation   |
-|---------------------------|----------------------------------|------------|
-| `logs/trades.jsonl`       | Every order placed + fill result | Daily      |
-| `logs/signals.jsonl`      | Every opportunity scanned        | Daily      |
-| `logs/positions.jsonl`    | Position lifecycle events        | Daily      |
-| `logs/errors.jsonl`       | Exceptions, partial fills        | Daily      |
-| `logs/performance.jsonl`  | PnL snapshots every 1 min        | Daily      |
-
-#### Metrics (in-memory, exported every 60s)
-
-```python
-metrics = {
-    "uptime_sec":          int,
-    "signals_per_min":     float,
-    "trades_per_min":      float,
-    "fill_rate":           float,    # filled / attempted
-    "pnl_today":           float,
-    "pnl_session":         float,
-    "capital_deployed":    float,
-    "open_positions":      int,
-    "orphan_positions":    int,
-    "ws_reconnects":       int,
-    "api_errors":          int,
-}
-```
-
-#### Telegram Alerts
-
-Send via Bot API on critical events:
-
-| Event                         | Severity |
-|-------------------------------|----------|
-| Daily loss limit hit          | CRITICAL |
-| API auth failure              | CRITICAL |
-| WS down > 10s                 | WARNING  |
-| Orphan position > $100        | WARNING  |
-| Hourly PnL report             | INFO     |
-| Bot start / stop              | INFO     |
-
----
-
-## 4. Data Flow
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                                                                  │
-│  [Every 30s]                                                     │
-│  Gamma API ──────────────▶ Market Registry                       │
-│                              (add/remove active markets)         │
-│                                    │                             │
-│                                    ▼                             │
-│                          WS Subscription Manager                 │
-│                          (subscribe to new condition_ids)        │
-│                                    │                             │
-│  [Real-time events]                ▼                             │
-│  WS Feed ────────────────▶ OrderBook Cache                       │
-│                          (in-memory, per token_id)               │
-│                                    │                             │
-│  [On every update]                 ▼                             │
-│                          Opportunity Scanner                     │
-│                          scan() → Signal | None                  │
-│                                    │                             │
-│                              [Signal emitted]                    │
-│                                    ▼                             │
-│                          Execution Engine                        │
-│                          asyncio.gather(order_up, order_down)    │
-│                                    │                             │
-│                          [Fill response]                         │
-│                                    ▼                             │
-│                          Position Tracker                        │
-│                          (record entry, monitor expiry)          │
-│                                    │                             │
-│                          [Every 1 min / on event]                │
-│                                    ▼                             │
-│                          Logger / Telemetry                      │
-│                          (JSONL + Telegram + metrics)            │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### Concurrency Model
-
-```
-Main Event Loop (asyncio)
-├── Task: market_registry_poller()       — every 30s
-├── Task: ws_manager()                   — persistent, reconnects
-│     ├── on_message → orderbook.update()
-│     └── on_message → scanner.on_update(market_id)
-├── Task: scanner.process_queue()        — consumes update events
-│     └── if signal: execution_queue.put(signal)
-├── Task: executor.process_queue()       — consumes signals
-│     └── asyncio.gather(place_up, place_down)
-├── Task: position_tracker.monitor()     — checks expiries
-└── Task: telemetry.report()             — every 60s
-```
-
-Single-process, fully async. No threads needed.
-
----
-
-## 5. Fee Structure & Profitability Model
-
-### 5.1 All-In Cost Model
-
-```
-Per-trade costs (taker mode):
-  fee_up   = price_up   × size × 0.02
-  fee_down = price_down × size × 0.02
-  gas      = $0.00  (gasless relayer)
-
-Total fee = (price_up + price_down) × size × 0.02 × 2
-          ≈ combined_price × size × 0.04
-```
-
-At `combined = 0.93` and `size = 20`:
-```
-total_fee = 0.93 × 20 × 0.04 = $0.744
-gross_pnl = (1.00 - 0.93) × 20 = $1.40
-net_pnl   = $1.40 - $0.744 = $0.656
-margin    = 0.656 / (0.93 × 20) = 3.5%
-```
-
-### 5.2 Minimum Viable Spread
-
-```python
-def is_profitable(ask_up: float, ask_down: float, size: float) -> bool:
-    combined   = ask_up + ask_down
-    gross_pnl  = (1.00 - combined) * size
-    total_fees = combined * size * 0.04   # 2% each side taker
-    return gross_pnl > total_fees
-
-# Simplified:
-# 1.00 - combined > combined * 0.04
-# 1.00 > combined * 1.04
-# combined < 1.00 / 1.04 = 0.9615
-
-MIN_ENTRY_SUM = 0.955   # conservative (adds 0.5% safety buffer)
-```
-
-### 5.3 Maker Mode (Advanced Optimization)
-
-If we can post **maker orders** (Post-Only) at prices slightly **worse than the best ask**, we pay 0% fee:
-
-```
-Post Up limit at: ask_up + 0.001   (one tick above best ask)
-Post Down limit at: ask_down + 0.001
-```
-
-This brings MIN_ENTRY_SUM up to `0.990` (viable spread = 1%+).  
-Risk: orders may not fill if market moves.  
-guh123 appears to use taker (immediate fills) — prioritizes fill certainty.
-
-### 5.4 Capital Efficiency
-
-Capital is locked per position until market expiry (~5 min):
-
-```
-capital_per_trade  = (ask_up + ask_down) × size
-                   ≈ 0.93 × 20 = $18.60
-
-At 13.5 trades/min, each locked 5 min:
-  concurrent_positions = 13.5 × 5 = 67.5
-  capital_locked       = 67.5 × $18.60 ≈ $1,255
-
-Required working capital: ~$2,000 (with 60% buffer)
-```
-
----
-
-## 6. Tech Stack
-
-### Primary: Python + asyncio
-
-| Component            | Library / Tool             | Reason                                      |
-|----------------------|----------------------------|---------------------------------------------|
-| CLOB trading         | `py-clob-client`           | Official SDK, handles auth, order signing   |
-| WebSocket            | `websockets` (asyncio)     | Lightweight, fully async                    |
-| HTTP client          | `aiohttp`                  | Async REST calls                            |
-| Data structures      | `sortedcontainers`         | SortedDict for orderbook (O(log n) updates) |
-| Config               | `pydantic-settings`        | .env + type safety                          |
-| Logging              | stdlib `logging` + JSONL   | Structured, zero-dep                        |
-| Telegram alerts      | `python-telegram-bot`      | Async, already in Ouroboros stack           |
-| Testing              | `pytest` + `pytest-asyncio`| Unit test order logic, mock WS              |
-
-### Why Python (not TypeScript)
-
-1. `py-clob-client` is the **official** SDK — avoids re-implementing ECDSA signing and order encoding.
-2. All research / calibration code (A-S model, VPIN) already in Python.
-3. `asyncio` handles 10+ concurrent WebSocket subscriptions easily.
-4. TypeScript would require reverse-engineering the signing protocol.
-
-### File Structure
+## 1. Структура файлов
 
 ```
 polymarket_arb/
-├── main.py                 # Entry point, wires components
-├── config.py               # Pydantic settings (from .env)
-├── market_registry.py      # Gamma API poller, MarketMeta
-├── orderbook.py            # OrderBook dataclass, WS manager
-├── scanner.py              # Opportunity Scanner, Signal
-├── executor.py             # Execution Engine, FAK orders
-├── position_tracker.py     # Position lifecycle, PnL
-├── logger.py               # JSONL + Telegram telemetry
-├── clob_client.py          # Thin wrapper around py-clob-client
-├── models.py               # Shared dataclasses
-└── tests/
-    ├── test_scanner.py
-    ├── test_executor.py
-    └── fixtures/           # Mock orderbook snapshots
+├── main.py                    # Entry point — запуск MainLoop
+├── config.py                  # Конфигурация (env vars, константы)
+├── services/
+│   ├── __init__.py
+│   ├── market_data.py         # MarketDataService — WS + orderbook
+│   └── execution.py           # ExecutionService — py-clob-client wrapper
+├── strategy/
+│   ├── __init__.py
+│   ├── base.py                # StrategyEngine — abstract base
+│   ├── neg_risk.py            # NegativeRiskStrategy — основная
+│   └── market_making.py       # MarketMakingStrategy — вторичная (A-S)
+├── risk/
+│   ├── __init__.py
+│   └── manager.py             # RiskManager — pre-trade checks
+├── core/
+│   ├── __init__.py
+│   ├── loop.py                # MainLoop — asyncio orchestration
+│   ├── models.py              # Dataclasses: OrderBook, Opportunity, Order
+│   └── events.py              # EventBus — internal pub/sub
+└── utils/
+    ├── __init__.py
+    ├── logger.py              # Structured logging (JSONL)
+    └── metrics.py             # PnL tracker, latency histogram
 ```
 
 ---
 
-## 7. Configuration Reference
+## 2. Компоненты
 
-```env
-# .env
-# ─── Wallet / Auth ───────────────────────────────────────
-PRIVATE_KEY=0x...            # EVM private key (EOA)
-POLYMARKET_API_KEY=...       # Derived L2 key (from create_or_derive_api_creds)
-POLYMARKET_API_SECRET=...
-POLYMARKET_API_PASSPHRASE=...
-PROXY_WALLET=0x...           # Your Polymarket proxy address
+### 2.1 `MarketDataService`
 
-# ─── Strategy Parameters ─────────────────────────────────
-MIN_ENTRY_SUM=0.955          # Max combined ask to enter
-MAX_ORDER_SIZE=24            # Max shares per leg
-MIN_ORDER_SIZE=5             # Min shares per leg
-MAX_DEPLOYED_USDC=5000       # Hard cap on deployed capital
-MAX_PER_MARKET_USDC=200      # Cap per market
-DAILY_LOSS_LIMIT=-500        # Halt bot if hit
-
-# ─── Target Markets ──────────────────────────────────────
-TARGET_ASSETS=BTC,ETH
-TARGET_TIMEFRAMES=5m,15m
-
-# ─── Connectivity ────────────────────────────────────────
-CLOB_HOST=https://clob.polymarket.com
-GAMMA_HOST=https://gamma-api.polymarket.com
-WS_HOST=wss://ws-subscriptions-clob.polymarket.com/ws/market
-CHAIN_ID=137                 # Polygon mainnet
-
-# ─── Telemetry ───────────────────────────────────────────
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
-LOG_DIR=./logs
-```
-
----
-
-## 8. Deployment
-
-### Environment
-
-- **Platform**: Any VPS with Python 3.11+ (preferably EU/US data center for latency).
-- **Geo note**: Polymarket API is accessible globally; no geo-restriction on CLOB.
-- **RAM**: 256MB+ sufficient (orderbook is tiny at this scale).
-- **CPU**: 1 core, not CPU-bound.
-
-### Prerequisites
-
-```bash
-pip install py-clob-client websockets aiohttp sortedcontainers pydantic-settings python-telegram-bot
-```
-
-### Key Setup Step: API Credential Derivation
+**Файл**: `services/market_data.py`  
+**Ответственность**: единственный источник правды об orderbook.
 
 ```python
-# Run once to derive L2 API keys from private key
-from py_clob_client.client import ClobClient
-
-client = ClobClient(host=CLOB_HOST, chain_id=137, key=PRIVATE_KEY)
-creds = client.create_or_derive_api_creds()
-print(creds)  # Save to .env
+class MarketDataService:
+    """
+    Подключается к Polymarket RTDS (Real-Time Data Service) через WebSocket.
+    Поддерживает in-memory снапшот orderbook для каждого активного рынка.
+    Публикует события OrderBookUpdate в EventBus.
+    """
+    
+    # State
+    _books: dict[str, OrderBook]           # token_id -> OrderBook
+    _ws_connections: dict[str, WebSocket]  # market_slug -> connection
+    _active_markets: list[MarketMeta]      # текущие открытые 5m/15m рынки
+    
+    # Публичный API
+    async def start(self) -> None: ...
+    async def get_book(self, token_id: str) -> OrderBook: ...
+    async def get_best_ask(self, token_id: str) -> Decimal: ...
+    async def get_active_markets(self) -> list[MarketMeta]: ...
+    async def refresh_active_markets(self) -> None: ...  # каждые ~30 сек
 ```
 
-### Launch
+**Источники данных**:
+- **WebSocket**: `wss://clob.polymarket.com/ws` — orderbook deltas в реальном времени
+- **REST (bootstrap)**: `GET /book?token_id=...` — начальный снапшот при подключении
+- **Gamma API**: `GET https://gamma-api.polymarket.com/markets?...` — список активных рынков
 
-```bash
-python polymarket_arb/main.py
+**Алгоритм поддержки orderbook**:
 ```
-
-### Health Check
-
-Bot exposes simple metrics via Telegram `/status` command:
-
-```
-📊 Bot Status
-Uptime: 2h 34m
-Trades today: 1,847
-PnL today: +$62.40
-Open positions: 23
-Capital deployed: $1,140 / $5,000
-WS status: connected
-Last trade: 4s ago
+1. При старте: GET /book -> инициализировать OrderBook
+2. Подписаться на WS: {"type": "subscribe", "markets": [token_id, ...]}
+3. При получении delta:
+   - "price_change": обновить уровень (bid/ask)
+   - "book": полный снапшот (ресинхронизация)
+4. Публиковать OrderBookUpdate в EventBus
 ```
 
 ---
 
-## Appendix A: Glossary
+### 2.2 `ExecutionService`
 
-| Term           | Definition                                                     |
-|----------------|----------------------------------------------------------------|
-| Neg-Risk       | Negative risk: guaranteed profit from buying both outcomes     |
-| FAK            | Fill and Kill: limit order that fills available, cancels rest  |
-| CLOB           | Central Limit Order Book                                       |
-| CTF            | Conditional Token Framework (Gnosis, powers Polymarket)        |
-| Condition ID   | Unique market identifier on CLOB                               |
-| Token ID       | Unique outcome token identifier (Up or Down side)              |
-| Proxy Wallet   | Polymarket's internal smart wallet for each user               |
-| Combined Ask   | `ask_up + ask_down` — the key metric watched by the scanner    |
-| VPIN           | Volume-Synchronized Probability of Informed Trading            |
+**Файл**: `services/execution.py`  
+**Ответственность**: исполнение ордеров через `py-clob-client`, управление сессией.
 
-## Appendix B: Risk Register
+```python
+class ExecutionService:
+    """
+    Тонкая обёртка над py-clob-client с:
+    - retry логикой (exponential backoff)
+    - rate limiting (≤ 10 req/sec по умолчанию)
+    - batch orders (до 15 ордеров за раз)
+    - логированием каждого ордера с latency
+    """
+    
+    _client: ClobClient          # py-clob-client instance
+    _rate_limiter: RateLimiter   # token bucket
+    
+    # Публичный API
+    async def place_order(self, order: OrderRequest) -> OrderResult: ...
+    async def place_batch(self, orders: list[OrderRequest]) -> list[OrderResult]: ...
+    async def get_balance(self) -> Decimal: ...  # USDC баланс
+    async def get_positions(self) -> list[Position]: ...
+```
 
-| Risk                        | Likelihood | Impact   | Mitigation                          |
-|-----------------------------|------------|----------|-------------------------------------|
-| API downtime                | Medium     | High     | Retry logic, REST fallback          |
-| Partial fill (leg imbalance)| Medium     | Medium   | Orphan handler, retry once          |
-| Fee increase                | Low        | Medium   | Config-driven MIN_ENTRY_SUM         |
-| Capital lock > 5min         | Low        | Low      | Small size per trade, spread out    |
-| Competitor latency          | High       | Low      | Already low target (13.5/min)       |
-| Market resolution delay     | Low        | Low      | Hold to expiry always               |
-| Private key leak            | Very Low   | Critical | .env never committed, use secret mgr|
+**Типы ордеров для стратегии**:
+- `FAK` (Fill-and-Kill) — предпочтительный тип для арбитража: исполнить немедленно или отменить
+- `FOK` (Fill-or-Kill) — для гарантии атомарности (обе стороны или ни одной)
+- `GTC` (Good-Till-Cancel) — для market making (постановка в стакан)
+
+**Batch execution для neg-risk**:
+```python
+# Отправляем UP и DOWN в одном batch-запросе
+orders = [
+    OrderRequest(token_id=up_token,   side="BUY", price=up_ask,   size=shares),
+    OrderRequest(token_id=down_token, side="BUY", price=down_ask, size=shares),
+]
+results = await execution.place_batch(orders)
+```
+
+---
+
+### 2.3 `StrategyEngine`
+
+**Файл**: `strategy/base.py` + `strategy/neg_risk.py`  
+**Ответственность**: принятие торговых решений на основе данных рынка.
+
+```python
+class StrategyEngine(ABC):
+    """Abstract base — все стратегии реализуют этот интерфейс."""
+    
+    @abstractmethod
+    async def on_book_update(self, event: OrderBookUpdateEvent) -> list[TradeSignal]:
+        """Получает обновление orderbook, возвращает список сигналов (может быть пустым)."""
+        ...
+    
+    @abstractmethod
+    async def on_market_open(self, market: MarketMeta) -> None:
+        """Уведомление о новом рынке (для подписки)."""
+        ...
+    
+    @abstractmethod
+    async def on_market_close(self, market: MarketMeta) -> None:
+        """Уведомление о закрытии рынка (для очистки состояния)."""
+        ...
+```
+
+#### `NegativeRiskStrategy`
+
+```python
+class NegativeRiskStrategy(StrategyEngine):
+    """
+    Основная стратегия: покупать обе стороны когда их сумма < 1 - fees.
+    
+    Алгоритм:
+    1. При каждом OrderBookUpdate: достать best_ask(UP) и best_ask(DOWN)
+    2. Проверить: sum = ask_up + ask_down
+    3. Если sum < THRESHOLD (с учётом fee): создать сигнал
+    4. Рассчитать размер (равные shares, ограниченные ликвидностью и риском)
+    5. Передать сигнал в RiskManager -> ExecutionService
+    """
+    
+    # Параметры
+    FEE_RATE: Decimal = Decimal("0.02")       # 2% fee (уточнить из API)
+    MIN_EDGE: Decimal = Decimal("0.005")      # минимальная прибыль после fees
+    MAX_POSITION_PER_MARKET: Decimal = ...    # из RiskManager
+    
+    def _calc_threshold(self) -> Decimal:
+        # Покупаем только если: 1 - ask_up - ask_down > MIN_EDGE + FEE_RATE * 2
+        return Decimal("1.0") - self.MIN_EDGE - self.FEE_RATE * 2
+    
+    def _calc_shares(self, up_ask: Decimal, down_ask: Decimal,
+                     up_avail: Decimal, down_avail: Decimal) -> Decimal:
+        """
+        Равные shares (не равные доллары) — паттерн guh123.
+        Ограничены: min(up_avail, down_avail, max_by_risk / total_cost)
+        """
+        max_by_risk = self.risk_mgr.max_order_size()
+        total_cost_per_share = up_ask + down_ask
+        max_shares = max_by_risk / total_cost_per_share
+        return min(up_avail, down_avail, max_shares)
+```
+
+#### `MarketMakingStrategy` (вторичная)
+
+```python
+class MarketMakingStrategy(StrategyEngine):
+    """
+    Avellaneda-Stoikov для бинарных рынков (параметры из backtesta).
+    
+    Калиброванные параметры (btc-updown-5m):
+      σ = 0.007636  (vol per √sec)
+      κ = 20.27     (order decay)
+      A = 39.33     (base order rate)
+      γ = 5-35      (risk aversion — implied из данных)
+      T = 300 sec   (market duration)
+    
+    Алгоритм:
+    1. Вычислить reservation price (r) с учётом inventory
+    2. Вычислить optimal spread
+    3. Выставить bid/ask вокруг r
+    4. Обновлять котировки при каждом тике или изменении inventory
+    5. VPIN > 0.35 -> прекратить котирование (toxic flow protection)
+    """
+    
+    CALIBRATED_PARAMS = {
+        'sigma': 0.007636, 'kappa': 20.27, 'A': 39.33,
+        'gamma': 1.0,      'T': 300,
+        'vpin_high': 0.25, 'vpin_crit': 0.35,
+    }
+```
+
+---
+
+### 2.4 `RiskManager`
+
+**Файл**: `risk/manager.py`  
+**Ответственность**: pre-trade проверки, глобальные и per-market лимиты.
+
+```python
+class RiskManager:
+    """
+    Единственный guard между сигналами стратегии и execution.
+    Все лимиты задаются через config.py / env vars.
+    """
+    
+    # Глобальные лимиты
+    MAX_GLOBAL_EXPOSURE: Decimal  # макс. суммарная открытая позиция ($)
+    MAX_DAILY_LOSS: Decimal       # стоп по дневному убытку ($)
+    MIN_USDC_RESERVE: Decimal     # минимальный остаток USDC (не торговать ниже)
+    
+    # Per-market лимиты
+    MAX_POSITION_PER_MARKET: Decimal  # макс. вложений в один рынок ($)
+    MAX_ORDERS_PER_MINUTE: int        # rate limit на ордера
+    
+    # State (обновляется из ExecutionService)
+    _current_exposure: Decimal
+    _daily_pnl: Decimal
+    _positions: dict[str, Decimal]  # market_id -> exposure
+    
+    def check(self, signal: TradeSignal) -> RiskDecision:
+        """
+        Возвращает APPROVE / REDUCE(new_size) / REJECT(reason).
+        Вызывается синхронно перед каждым execution.
+        """
+        checks = [
+            self._check_balance(signal),
+            self._check_daily_loss(),
+            self._check_global_exposure(signal),
+            self._check_per_market(signal),
+            self._check_rate_limit(),
+        ]
+        return self._aggregate(checks)
+    
+    def record_fill(self, fill: FillEvent) -> None:
+        """Обновляет состояние после исполнения ордера."""
+        ...
+    
+    def record_settlement(self, event: SettlementEvent) -> None:
+        """Обновляет PnL после закрытия рынка."""
+        ...
+```
+
+**Пороги по умолчанию** (конфигурируемые):
+| Параметр | Default |
+|----------|---------|
+| `MAX_POSITION_PER_MARKET` | $200 |
+| `MAX_GLOBAL_EXPOSURE` | $2,000 |
+| `MAX_DAILY_LOSS` | $100 |
+| `MIN_USDC_RESERVE` | $50 |
+| `MAX_ORDERS_PER_MINUTE` | 30 |
+| `MIN_EDGE` | 0.5% (после fees) |
+
+---
+
+### 2.5 `MainLoop`
+
+**Файл**: `core/loop.py`  
+**Ответственность**: запуск всех компонентов, event routing, graceful shutdown.
+
+```python
+class MainLoop:
+    """
+    asyncio-оркестратор. Запускает все компоненты как coroutines.
+    Связывает их через EventBus (pub/sub).
+    """
+    
+    def __init__(self, config: Config):
+        self.event_bus = EventBus()
+        self.market_data = MarketDataService(config, self.event_bus)
+        self.execution   = ExecutionService(config)
+        self.risk_mgr    = RiskManager(config)
+        self.strategy    = NegativeRiskStrategy(self.risk_mgr)
+        self.logger      = StructuredLogger(config)
+    
+    async def run(self) -> None:
+        """
+        Запускает все корутины параллельно.
+        При получении SIGINT — graceful shutdown.
+        """
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(self.market_data.start())
+            tg.create_task(self._market_refresh_loop())
+            tg.create_task(self._event_processing_loop())
+            tg.create_task(self._metrics_reporter())
+    
+    async def _event_processing_loop(self) -> None:
+        """Основной цикл: orderbook update -> signal -> risk check -> execute."""
+        async for event in self.event_bus.subscribe(OrderBookUpdateEvent):
+            signals = await self.strategy.on_book_update(event)
+            for signal in signals:
+                decision = self.risk_mgr.check(signal)
+                if decision.approved:
+                    result = await self.execution.place_batch(decision.orders)
+                    self.risk_mgr.record_fill(result)
+                    self.logger.log_trade(signal, decision, result)
+```
+
+---
+
+## 3. Data Flow
+
+```
+                         POLYMARKET
+                    ┌─────────────────────────────────┐
+                    │  RTDS WebSocket (orderbook WS)  │
+                    │  CLOB REST API  (execution)     │
+                    │  Gamma API      (market list)   │
+                    └──────────┬──────────────────────┘
+                               │ WS deltas / REST snapshots
+                               ▼
+                    ┌──────────────────────┐
+                    │  MarketDataService   │ ─── in-memory OrderBook state
+                    │  (WS handler +       │     per token_id
+                    │   book reconciler)   │
+                    └──────────┬───────────┘
+                               │ OrderBookUpdateEvent (via EventBus)
+                               ▼
+                    ┌──────────────────────┐
+                    │   StrategyEngine     │ ─── NegativeRiskStrategy
+                    │   on_book_update()   │     (or MarketMakingStrategy)
+                    └──────────┬───────────┘
+                               │ TradeSignal(token_up, token_down, shares, cost)
+                               ▼
+                    ┌──────────────────────┐
+                    │    RiskManager       │ ─── pre-trade checks
+                    │    check(signal)     │     APPROVE / REDUCE / REJECT
+                    └──────────┬───────────┘
+                               │ RiskDecision(approved=True, orders=[...])
+                               ▼
+                    ┌──────────────────────┐
+                    │  ExecutionService    │ ─── place_batch([UP_order, DOWN_order])
+                    │  (py-clob-client)    │     FAK / FOK orders
+                    └──────────┬───────────┘
+                               │ FillEvent(price_paid, shares, latency_ms)
+                               ▼
+                    ┌──────────────────────┐
+                    │   RiskManager        │ ─── record_fill() → update exposure
+                    │   + Logger           │     log trade to JSONL
+                    └──────────┬───────────┘
+                               │
+                    ┌──────────▼───────────┐
+                    │   Metrics / PnL      │  ─── per-market P&L
+                    │   (settlement)       │      cumulative stats
+                    └──────────────────────┘
+```
+
+### Критические пути по latency
+
+| Шаг | Target latency |
+|-----|---------------|
+| WS delta → OrderBook update | < 1 ms |
+| OrderBook update → Signal | < 1 ms |
+| Signal → Risk check | < 0.5 ms (sync) |
+| Risk → Execution (HTTP) | < 50 ms |
+| **Total: WS → Fill** | **< 100 ms** |
+
+> guh123 держит темп 13.5 трейдов/мин = **1 трейд каждые 4.4 секунды**. Это комфортно при 100ms latency — значит, конкуренция за отдельную арб-возможность есть, но не hyper-competitive.
+
+---
+
+## 4. EventBus (внутренний pub/sub)
+
+```python
+# core/events.py
+
+@dataclass
+class OrderBookUpdateEvent:
+    token_id: str
+    market_id: str
+    best_ask: Decimal
+    best_bid: Decimal
+    asks: list[tuple[Decimal, Decimal]]  # (price, size)
+    bids: list[tuple[Decimal, Decimal]]
+    timestamp: float
+
+@dataclass  
+class TradeSignal:
+    strategy: str                  # "neg_risk" | "mm"
+    up_token: str
+    down_token: str
+    market_slug: str
+    shares: Decimal
+    up_ask: Decimal
+    down_ask: Decimal
+    edge: Decimal                  # = 1 - up_ask - down_ask - fees
+    timestamp: float
+
+@dataclass
+class FillEvent:
+    signal: TradeSignal
+    orders_placed: int
+    orders_filled: int
+    total_cost: Decimal
+    latency_ms: float
+    timestamp: float
+```
+
+---
+
+## 5. Конфигурация (`config.py`)
+
+```python
+# Все параметры — через env vars с дефолтами
+
+@dataclass
+class Config:
+    # Auth
+    PRIVATE_KEY: str            = env("POLY_PRIVATE_KEY")
+    API_KEY: str                = env("POLY_API_KEY")
+    API_SECRET: str             = env("POLY_API_SECRET")
+    API_PASSPHRASE: str         = env("POLY_PASSPHRASE")
+    
+    # Network
+    HOST: str                   = "https://clob.polymarket.com"
+    CHAIN_ID: int               = 137  # Polygon
+    
+    # Strategy
+    TARGET_SLUGS: list[str]     = ["btc-updown-5m", "eth-updown-5m"]
+    MIN_EDGE_PCT: float         = 0.005   # 0.5% minimum profit
+    FEE_RATE: float             = 0.02    # 2% taker fee (verify via API)
+    
+    # Risk
+    MAX_POSITION_PER_MARKET: float  = 200.0
+    MAX_GLOBAL_EXPOSURE: float      = 2000.0
+    MAX_DAILY_LOSS: float           = 100.0
+    MIN_USDC_RESERVE: float         = 50.0
+    MAX_ORDERS_PER_MINUTE: int      = 30
+    
+    # Execution
+    ORDER_TYPE: str             = "FAK"   # Fill-and-Kill
+    MAX_RETRIES: int            = 3
+    RETRY_DELAY_MS: int         = 200
+    
+    # Monitoring
+    LOG_DIR: str                = "./logs"
+    METRICS_INTERVAL_SEC: int   = 60
+```
+
+---
+
+## 6. Ключевые решения архитектуры
+
+### 6.1 Равные shares vs равные доллары
+
+guh123 покупает **равное количество шер** (shares) на обе стороны — не равные доллары:
+
+```
+UP:   1,907 shares × $0.207 = $394
+DOWN: 1,940 shares × $0.773 = $1,499   ← разница 1.7% в shares
+
+Payoff при любом исходе: ~$1,940 (по большей позиции)
+Стоимость: $1,893
+Edge: $47 (2.5%)
+```
+
+**Почему**: при разрешении рынка платят по **количеству шер** победившей стороны. Если купить равное количество шер, гарантированный выигрыш = `shares × $1.00`, независимо от того, какая сторона победила.
+
+### 6.2 Batch orders — необходимость
+
+Покупка UP и DOWN — **два отдельных ордера**. Polymarket не поддерживает атомарные спредовые ордера. Поэтому:
+- Используем `place_batch` (до 15 ордеров за раз)
+- **Риск leg-risk**: первый ордер может исполниться, второй — нет (если цена ушла)
+- Митигация: `FOK` (Fill-or-Kill) на обе ноги, или мониторинг + быстрое закрытие
+
+### 6.3 Capital lock-up
+
+Капитал заблокирован до разрешения рынка (~5 минут). При $2,000 капитала и среднем размере позиции $200 — одновременно активно ~10 рынков. Это соответствует реальности: guh123 торгует на нескольких 5m рынках параллельно.
+
+### 6.4 Fee calculation
+
+```python
+def calc_true_edge(ask_up: Decimal, ask_down: Decimal, fee_rate: Decimal) -> Decimal:
+    """
+    True edge после комиссий.
+    Fee берётся с каждой стороны при покупке.
+    """
+    cost = ask_up + ask_down
+    total_fee = (ask_up + ask_down) * fee_rate  # уточнить: fee от notional или от side
+    payoff = Decimal("1.0")
+    return payoff - cost - total_fee
+```
+
+> ⚠️ **Важно**: точная формула fee требует верификации через Polymarket docs. Fee может браться только при торговле (0% при резолюции), что значительно меняет расчёт.
+
+---
+
+## 7. Фазы разработки
+
+### Phase 1: Core (MVP) — ~1 неделя
+
+- [ ] `models.py` — dataclasses
+- [ ] `market_data.py` — REST bootstrap + WS connection
+- [ ] `execution.py` — `py-clob-client` wrapper, dry-run mode
+- [ ] `neg_risk.py` — основная логика
+- [ ] `risk/manager.py` — базовые лимиты
+- [ ] `main.py` — запуск, graceful shutdown
+- [ ] Логирование всех ордеров в JSONL
+
+### Phase 2: Reliability — ~3 дня
+
+- [ ] WS reconnect с экспоненциальным backoff
+- [ ] Orderbook resync при разрыве соединения
+- [ ] Leg-risk mitigation (мониторинг частично исполненных ордеров)
+- [ ] Dry-run / paper trading режим
+- [ ] Health check endpoint
+
+### Phase 3: Optimization — ~1 неделя
+
+- [ ] Calibrate `MIN_EDGE` из live данных
+- [ ] `MarketMakingStrategy` (A-S model)
+- [ ] VPIN calculation для toxic flow detection
+- [ ] Position sizing optimization
+- [ ] Backtest harness
+
+---
+
+## 8. Зависимости
+
+```txt
+# requirements.txt
+py-clob-client>=0.15.0
+websockets>=12.0
+aiohttp>=3.9.0
+python-dotenv>=1.0.0
+eth-account>=0.11.0   # для подписи (используется py-clob-client)
+```
+
+---
+
+## 9. Запуск
+
+```bash
+# 1. Установка
+pip install -r requirements.txt
+
+# 2. Конфиг
+cp .env.example .env
+# Заполнить POLY_PRIVATE_KEY, POLY_API_KEY и т.д.
+
+# 3. Dry-run (без реальных ордеров)
+DRY_RUN=true python main.py
+
+# 4. Live
+python main.py
+```
+
+---
+
+## 10. Метрики и мониторинг
+
+```python
+# Минимальный набор метрик для оценки работы бота
+
+{
+  "timestamp": "2026-03-13T22:00:00Z",
+  "session_duration_min": 60,
+  "trades_total": 810,           # ~13.5/min
+  "trades_per_min": 13.5,
+  "fills_rate": 0.95,            # 95% исполнения
+  "avg_edge_pct": 0.031,         # средняя прибыль 3.1%
+  "avg_latency_ms": 45,
+  "pnl_gross": 250.50,
+  "fees_paid": 38.20,
+  "pnl_net": 212.30,
+  "active_markets": 8,
+  "leg_risk_events": 2,          # один ордер исполнился, второй нет
+  "risk_rejections": 5
+}
+```
+
+---
+
+*Документ отражает текущее понимание системы на основе анализа guh123 и публичной документации Polymarket. Ряд параметров (fee_rate, WS endpoint, batch limits) требует верификации в live среде.*
