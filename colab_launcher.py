@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 # ----------------------------
 def install_launcher_deps() -> None:
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "openai>=1.0.0", "requests", "playwright"],
+        [sys.executable, "-m", "pip", "install", "-q", "openai>=1.0.0", "requests", "playwright", "nest_asyncio", "beautifulsoup4"],
         check=True,
     )
     # Playwright browsers are not persisted across Colab sessions — reinstall on every boot.
