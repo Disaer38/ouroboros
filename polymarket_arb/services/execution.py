@@ -59,7 +59,9 @@ class ExecutionService:
         self._client = None
         self._trades_executed = 0
         self._total_profit_simulated = 0.0
-        
+        self._last_latency_ms: float = 0.0
+        self._latency_samples: list[float] = []
+
         if not simulation:
             self._init_clob_client()
     
@@ -164,97 +166,92 @@ class ExecutionService:
         down_ask: Decimal,
         shares: Decimal,
     ) -> TradeResult:
-        """Place real FOK orders via py-clob-client."""
+        """Place real FOK orders via py-clob-client (single batch round-trip)."""
         from py_clob_client.clob_types import OrderArgs, OrderType
 
         loop = asyncio.get_event_loop()
         _client = self._client
+        t_start = time.perf_counter()
 
-        def _place_order(token_id: str, price: float, size: float) -> dict:
-            order_args = OrderArgs(
-                token_id=token_id,
-                price=price,
-                size=size,
-                side="BUY",
-                fee_rate_bps=200,
-            )
-            order = _client.create_order(order_args)
-            return _client.post_order(order, orderType=OrderType.FOK)
+        up_price = float(up_ask)
+        down_price = float(down_ask)
+        size = float(shares)
 
-        def _parse_result(resp: dict, token_id: str, price: float, size: float, leg: str) -> OrderResult:
-            status = resp.get("status", "")
-            order_id = resp.get("orderID") or resp.get("order_id") or resp.get("id", "")
-            if status == "matched" or order_id:
-                resolved_status = "filled"
+        def _build_and_post_batch() -> list:
+            # Build both orders
+            up_args   = OrderArgs(token_id=up_token_id,   price=up_price,   size=size, side="BUY", fee_rate_bps=200)
+            down_args = OrderArgs(token_id=down_token_id, price=down_price, size=size, side="BUY", fee_rate_bps=200)
+            up_order   = _client.create_order(up_args)
+            down_order = _client.create_order(down_args)
+            # Single network round-trip for both legs
+            return _client.post_orders([up_order, down_order], orderType=OrderType.FOK)
+
+        def _parse(resp, token_id, price, leg) -> OrderResult:
+            """Parse one element from the batch response list."""
+            if isinstance(resp, dict):
+                order_id = resp.get("orderID") or resp.get("order_id") or resp.get("id", "")
+                status_raw = resp.get("status", "")
+                error_msg  = resp.get("errorMsg") or resp.get("error") or None
+                resolved   = "filled" if (status_raw == "matched" or order_id) else "failed"
             else:
-                resolved_status = "failed"
+                order_id, resolved, error_msg = "", "failed", str(resp)
             return OrderResult(
                 order_id=str(order_id) if order_id else f"live-{leg}-no-id",
                 token_id=token_id,
                 side="BUY",
                 price=price,
                 size=size,
-                status=resolved_status,
+                status=resolved,
+                error=error_msg,
             )
 
-        up_price = float(up_ask)
-        down_price = float(down_ask)
-        up_size = float(shares)
-        down_size = float(shares)
-
-        # --- UP leg ---
-        up_result: OrderResult
         try:
-            up_resp = await loop.run_in_executor(
-                None, _place_order, up_token_id, up_price, up_size
-            )
-            logger.info(f"[LIVE] {market_slug} UP leg response: {up_resp}")
-            up_result = _parse_result(up_resp, up_token_id, up_price, up_size, "up")
-        except Exception as e:
-            logger.error(f"[LIVE] {market_slug} UP leg failed: {e}")
-            up_result = OrderResult(
-                order_id="live-up-error",
-                token_id=up_token_id,
-                side="BUY",
-                price=up_price,
-                size=up_size,
-                status="failed",
-                error=str(e),
-            )
+            resps = await loop.run_in_executor(None, _build_and_post_batch)
+            latency_ms = (time.perf_counter() - t_start) * 1000
+            logger.info(f"[LIVE] {market_slug} batch response ({latency_ms:.1f}ms): {resps}")
+            self._last_latency_ms = latency_ms
+            self._latency_samples.append(latency_ms)
 
-        # --- DOWN leg (always attempted, even if UP failed) ---
-        down_result: OrderResult
-        try:
-            down_resp = await loop.run_in_executor(
-                None, _place_order, down_token_id, down_price, down_size
-            )
-            logger.info(f"[LIVE] {market_slug} DOWN leg response: {down_resp}")
-            down_result = _parse_result(down_resp, down_token_id, down_price, down_size, "down")
-        except Exception as e:
-            logger.error(f"[LIVE] {market_slug} DOWN leg failed: {e}")
-            down_result = OrderResult(
-                order_id="live-down-error",
-                token_id=down_token_id,
-                side="BUY",
-                price=down_price,
-                size=down_size,
-                status="failed",
-                error=str(e),
-            )
+            # resps is a list of 2 dicts: [up_resp, down_resp]
+            if not isinstance(resps, (list, tuple)) or len(resps) < 2:
+                raise ValueError(f"Unexpected batch response shape: {resps}")
 
-        if up_result.status == "failed" or down_result.status == "failed":
+            up_result   = _parse(resps[0], up_token_id,   up_price,   "up")
+            down_result = _parse(resps[1], down_token_id, down_price, "down")
+
+        except Exception as e:
+            latency_ms = (time.perf_counter() - t_start) * 1000
+            logger.error(f"[LIVE] {market_slug} batch failed ({latency_ms:.1f}ms): {e}")
+            self._last_latency_ms = latency_ms
+            self._latency_samples.append(latency_ms)
+            failed = OrderResult(order_id="batch-error", token_id="", side="BUY",
+                                 price=0, size=size, status="failed", error=str(e))
+            return TradeResult(up_order=failed, down_order=failed, simulated=False)
+
+        if not (up_result.status == "filled" and down_result.status == "filled"):
             logger.warning(
                 f"[LIVE] {market_slug} partial/full failure — "
-                f"UP={up_result.status} (id={up_result.order_id}), "
-                f"DOWN={down_result.status} (id={down_result.order_id})"
+                f"UP={up_result.status}, DOWN={down_result.status}"
             )
 
         return TradeResult(up_order=up_result, down_order=down_result, simulated=False)
     
     @property
     def stats(self) -> dict:
+        samples = self._latency_samples
+        if samples:
+            avg_latency = sum(samples) / len(samples)
+            sorted_s = sorted(samples)
+            p95_idx = int(len(sorted_s) * 0.95)
+            p95_latency = sorted_s[min(p95_idx, len(sorted_s) - 1)]
+        else:
+            avg_latency = 0.0
+            p95_latency = 0.0
         return {
             "trades": self._trades_executed,
             "simulated_profit": round(self._total_profit_simulated, 4),
             "mode": "simulation" if self.simulation else "live",
+            "last_latency_ms": round(self._last_latency_ms, 3),
+            "avg_latency_ms": round(avg_latency, 3),
+            "p95_latency_ms": round(p95_latency, 3),
         }
