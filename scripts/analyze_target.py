@@ -1,32 +1,35 @@
 #!/usr/bin/env python3
 """
-Comprehensive analysis of Polymarket trader 0xa45fe11dd1420fca906ceac2c067844379a42429 (guh123).
-Fetches full trade history via pagination, analyzes strategy, saves raw data + report.
+Comprehensive analysis of Polymarket trader guh123.
+Wallet: 0xa45fe11dd1420fca906ceac2c067844379a42429
+
+Fetches full trade history via pagination, analyzes strategy patterns,
+saves raw data + markdown report.
 """
 
 import requests
 import json
 import time
 import os
-from collections import defaultdict
+from collections import defaultdict, Counter
 from datetime import datetime, timezone
 
 # ─── Config ──────────────────────────────────────────────────────────────────
-TARGET = "0xa45fe11dd1420fca906ceac2c067844379a42429"
+TARGET    = "0xa45fe11dd1420fca906ceac2c067844379a42429"
 DATA_API  = "https://data-api.polymarket.com"
 GAMMA_API = "https://gamma-api.polymarket.com"
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR  = os.path.join(REPO_ROOT, "data")
-REPORT_DIR= os.path.join(REPO_ROOT, "reports")
+REPO_ROOT  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR   = os.path.join(REPO_ROOT, "data")
+REPORT_DIR = os.path.join(REPO_ROOT, "reports")
 os.makedirs(DATA_DIR,   exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 RAW_FILE    = os.path.join(DATA_DIR,   "0xa45_history.json")
 REPORT_FILE = os.path.join(REPORT_DIR, "0xa45_analysis.md")
 
-LIMIT = 500   # max per request
-MAX_PAGES = 200  # safety cap → up to 100,000 trades
+LIMIT     = 500    # max per request
+MAX_PAGES = 200    # safety cap
 
 # ─── Fetch helpers ────────────────────────────────────────────────────────────
 
@@ -40,7 +43,7 @@ def fetch_trades_page(user: str, offset: int) -> list:
             data = r.json()
             return data if isinstance(data, list) else []
         except Exception as e:
-            print(f"  [!] Attempt {attempt+1} failed: {e}")
+            print(f"  [!] Attempt {attempt+1} failed at offset={offset}: {e}")
             time.sleep(2 ** attempt)
     return []
 
@@ -53,32 +56,18 @@ def fetch_all_trades(user: str) -> list:
     for page in range(MAX_PAGES):
         batch = fetch_trades_page(user, offset)
         if not batch:
-            print(f"  → Empty page at offset {offset}. Done.")
+            print(f"  → No data at offset {offset}. Pagination complete.")
             break
         all_trades.extend(batch)
         print(f"  → Page {page+1}: +{len(batch)} trades (total: {len(all_trades)})")
         if len(batch) < LIMIT:
             break  # last page
         offset += len(batch)
-        time.sleep(0.15)  # polite rate limiting
+        time.sleep(0.15)
     return all_trades
 
 
-def fetch_activity(user: str) -> dict:
-    """Fetch aggregated activity/profile from Gamma API."""
-    url = f"{GAMMA_API}/activity"
-    params = {"user": user}
-    try:
-        r = requests.get(url, params=params, timeout=30)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"  [!] Activity fetch failed: {e}")
-        return {}
-
-
 def fetch_positions(user: str) -> list:
-    """Fetch current positions."""
     url = f"{DATA_API}/positions"
     params = {"user": user, "limit": 500}
     try:
@@ -91,305 +80,433 @@ def fetch_positions(user: str) -> list:
         return []
 
 
-# ─── Analysis ─────────────────────────────────────────────────────────────────
+def fetch_profile(user: str) -> dict:
+    """Try multiple Gamma endpoints for profile data."""
+    endpoints = [
+        f"{GAMMA_API}/profiles/{user}",
+        f"{GAMMA_API}/users/{user}",
+        f"{DATA_API}/activity?user={user}&limit=1",
+    ]
+    for url in endpoints:
+        try:
+            r = requests.get(url, timeout=15)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
+    return {}
 
-def classify_market(asset_id: str, question: str, slug: str) -> str:
-    """Classify market into timeframe category."""
-    text = (question + slug).lower()
-    if "5m" in text or "5-min" in text or "5 min" in text:
-        return "5m"
-    if "15m" in text or "15-min" in text or "15 min" in text:
-        return "15m"
-    if "1h" in text or "hourly" in text or "1-hour" in text or "1 hour" in text:
-        return "1h"
-    if "daily" in text or "end of day" in text:
-        return "daily"
-    return "other"
+
+# ─── Slug classifier ──────────────────────────────────────────────────────────
+
+def classify_slug(slug: str) -> tuple:
+    """Returns (timeframe, underlying_asset)."""
+    s = slug.lower()
+
+    # Timeframe
+    if "5m" in s or "-5m-" in s:
+        tf = "5m"
+    elif "15m" in s or "-15m-" in s:
+        tf = "15m"
+    elif "1h" in s or "hourly" in s or "-1h-" in s:
+        tf = "1h"
+    elif "daily" in s or "end-of-day" in s:
+        tf = "daily"
+    else:
+        tf = "other"
+
+    # Asset
+    asset = "other"
+    for a in ["btc", "bitcoin", "eth", "ethereum", "sol", "solana", "xrp", "ripple", "doge"]:
+        if a in s:
+            asset_map = {
+                "btc": "BTC", "bitcoin": "BTC",
+                "eth": "ETH", "ethereum": "ETH",
+                "sol": "SOL", "solana": "SOL",
+                "xrp": "XRP", "ripple": "XRP",
+                "doge": "DOGE",
+            }
+            asset = asset_map[a]
+            break
+
+    return tf, asset
 
 
-def safe_float(val, default=0.0) -> float:
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return default
-
+# ─── Core analysis ────────────────────────────────────────────────────────────
 
 def analyze_trades(trades: list) -> dict:
-    """Full analysis of trade list."""
+    """Full statistical analysis of trade list."""
     if not trades:
         return {}
 
-    # ── Per-market aggregation ──
-    market_stats = defaultdict(lambda: {
-        "question": "", "slug": "", "asset_id": "",
-        "condition_id": "", "timeframe": "other",
+    # ── Per-market (conditionId) stats ──
+    markets = defaultdict(lambda: {
+        "question": "", "slug": "", "timeframe": "other", "asset": "other",
+        "condition_id": "", "eventSlug": "",
         "trades": 0, "volume_usdc": 0.0,
-        "buy_yes": 0, "buy_no": 0,
-        "shares_yes": 0.0, "shares_no": 0.0,
-        "pnl_estimate": 0.0,
-        "prices_yes": [], "prices_no": [],
+        "buy_up": 0, "buy_down": 0,
+        "size_up": 0.0, "size_down": 0.0,
+        "prices_up": [], "prices_down": [],
         "timestamps": [],
     })
 
-    hourly_volume = defaultdict(float)
-    hourly_trades = defaultdict(int)
-    size_buckets  = defaultdict(int)
-    total_volume  = 0.0
-    total_fees    = 0.0
-    trade_sizes   = []
-    timestamps    = []
+    # ── Per-window (eventSlug / 5-min window) stats ──
+    # eventSlug groups all assets traded in one 5m window
+    windows = defaultdict(lambda: {
+        "event_slug": "", "assets": set(),
+        "trades": 0, "volume_usdc": 0.0,
+        "buy_up": 0, "buy_down": 0,
+        "timestamps": [],
+    })
+
+    hourly_volume  = defaultdict(float)
+    hourly_trades  = defaultdict(int)
+    size_dist      = Counter()   # rounded USDC per trade
+    total_volume   = 0.0
+    trade_values   = []
+    timestamps     = []
 
     for t in trades:
-        price    = safe_float(t.get("price"))
-        size     = safe_float(t.get("size"))        # shares
-        value    = price * size                      # USDC equivalent
-        fee      = safe_float(t.get("feeRateBps", 0)) / 10000 * value
-        side     = t.get("side", "").upper()         # BUY / SELL
-        outcome  = t.get("outcome", "").upper()      # YES / NO
-        cond_id  = t.get("conditionId", "unknown")
-        question = t.get("title", t.get("question", ""))
+        price    = float(t.get("price", 0))
+        size     = float(t.get("size", 0))
+        value    = price * size          # USDC cost of this trade
+        side     = t.get("side", "BUY").upper()
+        outcome  = t.get("outcome", "").lower()   # "up" or "down"
+        cond_id  = t.get("conditionId", "?")
         slug     = t.get("slug", "")
-        asset_id = t.get("asset_id", t.get("assetId", ""))
+        event_slug = t.get("eventSlug", slug)
+        question = t.get("title", "")
+        ts_unix  = t.get("timestamp", 0)  # Unix timestamp (int)
 
-        ts_str   = t.get("timestamp", t.get("createdAt", ""))
+        tf, asset = classify_slug(slug)
+
         try:
-            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            ts = datetime.fromtimestamp(ts_unix, tz=timezone.utc)
         except Exception:
             ts = None
 
-        # Aggregate
-        ms = market_stats[cond_id]
-        ms["question"]    = question or ms["question"]
-        ms["slug"]        = slug or ms["slug"]
-        ms["asset_id"]    = asset_id or ms["asset_id"]
-        ms["condition_id"]= cond_id
-        if ms["timeframe"] == "other":
-            ms["timeframe"] = classify_market(asset_id, question, slug)
-        ms["trades"]      += 1
-        ms["volume_usdc"] += value
+        # ── Market aggregation ──
+        m = markets[cond_id]
+        m["question"]    = question or m["question"]
+        m["slug"]        = slug or m["slug"]
+        m["condition_id"]= cond_id
+        m["eventSlug"]   = event_slug
+        m["timeframe"]   = tf
+        m["asset"]       = asset
+        m["trades"]      += 1
+        m["volume_usdc"] += value
+        if outcome in ("up", "1"):
+            m["buy_up"]   += 1
+            m["size_up"]  += size
+            m["prices_up"].append(price)
+        elif outcome in ("down", "0"):
+            m["buy_down"]  += 1
+            m["size_down"] += size
+            m["prices_down"].append(price)
         if ts:
-            ms["timestamps"].append(ts.timestamp())
+            m["timestamps"].append(ts_unix)
 
-        if side == "BUY":
-            if outcome in ("YES", "1"):
-                ms["buy_yes"]    += 1
-                ms["shares_yes"] += size
-                ms["prices_yes"].append(price)
-            elif outcome in ("NO", "0"):
-                ms["buy_no"]     += 1
-                ms["shares_no"]  += size
-                ms["prices_no"].append(price)
+        # ── Window aggregation ──
+        w = windows[event_slug]
+        w["event_slug"]   = event_slug
+        w["assets"].add(asset)
+        w["trades"]      += 1
+        w["volume_usdc"] += value
+        if outcome in ("up", "1"):
+            w["buy_up"] += 1
+        elif outcome in ("down", "0"):
+            w["buy_down"] += 1
+        if ts:
+            w["timestamps"].append(ts_unix)
 
+        # ── Globals ──
         total_volume += value
-        total_fees   += fee
-        trade_sizes.append(value)
+        trade_values.append(value)
+        size_dist[round(value, 2)] += 1
 
-        # Hourly buckets
         if ts:
             hour_key = ts.strftime("%Y-%m-%dT%H:00Z")
             hourly_volume[hour_key] += value
             hourly_trades[hour_key] += 1
-            timestamps.append(ts.timestamp())
-
-        # Size buckets
-        rounded = round(value)
-        size_buckets[rounded] += 1
-
-    # ── Neg-risk detection ──
-    neg_risk_markets = {}
-    for cid, ms in market_stats.items():
-        if ms["prices_yes"] and ms["prices_no"]:
-            avg_yes = sum(ms["prices_yes"]) / len(ms["prices_yes"])
-            avg_no  = sum(ms["prices_no"])  / len(ms["prices_no"])
-            spread  = 1.0 - (avg_yes + avg_no)
-            if spread > 0:
-                neg_risk_markets[cid] = {
-                    "spread": round(spread, 4),
-                    "avg_yes": round(avg_yes, 4),
-                    "avg_no":  round(avg_no, 4),
-                    "question": ms["question"],
-                    "timeframe": ms["timeframe"],
-                }
-
-    # ── Timeframe breakdown ──
-    timeframe_stats = defaultdict(lambda: {"trades": 0, "volume": 0.0, "markets": 0})
-    for cid, ms in market_stats.items():
-        tf = ms["timeframe"]
-        timeframe_stats[tf]["trades"]  += ms["trades"]
-        timeframe_stats[tf]["volume"]  += ms["volume_usdc"]
-        timeframe_stats[tf]["markets"] += 1
+            timestamps.append(ts_unix)
 
     # ── Time range ──
     if timestamps:
-        ts_min = datetime.fromtimestamp(min(timestamps), tz=timezone.utc)
-        ts_max = datetime.fromtimestamp(max(timestamps), tz=timezone.utc)
-        span_hours = (max(timestamps) - min(timestamps)) / 3600
+        ts_min_dt = datetime.fromtimestamp(min(timestamps), tz=timezone.utc)
+        ts_max_dt = datetime.fromtimestamp(max(timestamps), tz=timezone.utc)
+        span_secs  = max(timestamps) - min(timestamps)
+        span_hours = span_secs / 3600
     else:
-        ts_min = ts_max = None
+        ts_min_dt = ts_max_dt = None
         span_hours = 0
 
-    # ── Top size buckets ──
-    top_sizes = sorted(size_buckets.items(), key=lambda x: -x[1])[:20]
+    # ── Neg-risk detection ──
+    # For each 5m window: check if (avg_price_up + avg_price_down) < 1.0
+    neg_risk_windows = []
+    for cid, m in markets.items():
+        if m["prices_up"] and m["prices_down"]:
+            avg_up   = sum(m["prices_up"]) / len(m["prices_up"])
+            avg_down = sum(m["prices_down"]) / len(m["prices_down"])
+            spread   = 1.0 - (avg_up + avg_down)
+            if spread > 0:
+                neg_risk_windows.append({
+                    "condition_id": cid,
+                    "question": m["question"],
+                    "asset": m["asset"],
+                    "timeframe": m["timeframe"],
+                    "avg_up":   round(avg_up, 4),
+                    "avg_down": round(avg_down, 4),
+                    "spread":   round(spread, 4),
+                    "trades":   m["trades"],
+                    "volume":   round(m["volume_usdc"], 2),
+                })
 
-    # ── Most active hours ──
-    top_hours = sorted(hourly_volume.items(), key=lambda x: -x[1])[:24]
+    neg_risk_windows.sort(key=lambda x: -x["spread"])
 
-    # ── Top markets by volume ──
-    top_markets = sorted(market_stats.values(), key=lambda x: -x["volume_usdc"])[:30]
+    # ── Timeframe breakdown ──
+    tf_stats = defaultdict(lambda: {"trades": 0, "volume": 0.0, "markets": 0})
+    asset_stats = defaultdict(lambda: {"trades": 0, "volume": 0.0})
+    for cid, m in markets.items():
+        tf = m["timeframe"]
+        tf_stats[tf]["trades"]  += m["trades"]
+        tf_stats[tf]["volume"]  += m["volume_usdc"]
+        tf_stats[tf]["markets"] += 1
+        a = m["asset"]
+        asset_stats[a]["trades"] += m["trades"]
+        asset_stats[a]["volume"] += m["volume_usdc"]
 
-    avg_trade_size = (total_volume / len(trades)) if trades else 0
-    trade_freq_per_min = (len(trades) / (span_hours * 60)) if span_hours > 0 else 0
+    # ── Window coverage: how many windows traded BOTH BTC + ETH ──
+    dual_asset_windows = sum(1 for w in windows.values() if len(w["assets"]) >= 2)
+    both_sides_windows = sum(1 for w in windows.values() if w["buy_up"] > 0 and w["buy_down"] > 0)
 
-    # ── Neg-risk summary ──
-    neg_risk_list = sorted(neg_risk_markets.values(), key=lambda x: -x["spread"])[:20]
+    # ── Top size distribution ──
+    top_sizes = size_dist.most_common(20)
+
+    # ── Most traded markets ──
+    top_markets = sorted(markets.values(), key=lambda x: -x["volume_usdc"])[:30]
+
+    avg_trade_size = total_volume / len(trades) if trades else 0
+    trade_freq_min = (len(trades) / (span_hours * 60)) if span_hours > 0 else 0
+    vol_per_hour   = total_volume / span_hours if span_hours > 0 else 0
 
     return {
-        "total_trades": len(trades),
-        "total_volume_usdc": round(total_volume, 2),
-        "total_fees_est": round(total_fees, 2),
-        "avg_trade_size_usdc": round(avg_trade_size, 4),
-        "trade_freq_per_min": round(trade_freq_per_min, 4),
-        "unique_markets": len(market_stats),
+        "total_trades":       len(trades),
+        "total_volume_usdc":  round(total_volume, 2),
+        "avg_trade_size_usdc":round(avg_trade_size, 4),
+        "trade_freq_per_min": round(trade_freq_min, 4),
+        "vol_per_hour":       round(vol_per_hour, 2),
+        "unique_markets":     len(markets),
+        "unique_windows":     len(windows),
+        "dual_asset_windows": dual_asset_windows,
+        "both_sides_windows": both_sides_windows,
+        "neg_risk_count":     len(neg_risk_windows),
+        "neg_risk_top":       neg_risk_windows[:20],
         "date_range": {
-            "from": ts_min.isoformat() if ts_min else None,
-            "to":   ts_max.isoformat() if ts_max else None,
-            "span_hours": round(span_hours, 2),
+            "from":       ts_min_dt.isoformat() if ts_min_dt else None,
+            "to":         ts_max_dt.isoformat() if ts_max_dt else None,
+            "span_hours": round(span_hours, 3),
         },
-        "timeframe_breakdown": dict(timeframe_stats),
-        "top_sizes": top_sizes,
-        "top_hours_by_volume": top_hours,
-        "top_markets_by_volume": [
-            {k: v for k, v in m.items() if k not in ("prices_yes", "prices_no", "timestamps")}
+        "timeframe_breakdown": {
+            k: {"trades": v["trades"], "volume": round(v["volume"], 2), "markets": v["markets"]}
+            for k, v in sorted(tf_stats.items(), key=lambda x: -x[1]["volume"])
+        },
+        "asset_breakdown": {
+            k: {"trades": v["trades"], "volume": round(v["volume"], 2)}
+            for k, v in sorted(asset_stats.items(), key=lambda x: -x[1]["volume"])
+        },
+        "top_sizes":     top_sizes,
+        "hourly_volume": dict(sorted(hourly_volume.items())),
+        "hourly_trades": dict(sorted(hourly_trades.items())),
+        "top_markets": [
+            {k: v for k, v in m.items() if k not in ("prices_up", "prices_down", "timestamps")}
             for m in top_markets
         ],
-        "neg_risk_markets_count": len(neg_risk_markets),
-        "neg_risk_best": neg_risk_list,
+        "windows_sample": [
+            {
+                "event_slug":    w["event_slug"],
+                "assets":        sorted(w["assets"]),
+                "trades":        w["trades"],
+                "volume_usdc":   round(w["volume_usdc"], 2),
+                "buy_up":        w["buy_up"],
+                "buy_down":      w["buy_down"],
+            }
+            for w in sorted(windows.values(), key=lambda x: -x["volume_usdc"])[:20]
+        ],
     }
 
 
-# ─── Report generation ────────────────────────────────────────────────────────
+# ─── Report ───────────────────────────────────────────────────────────────────
 
-def generate_report(analysis: dict, activity: dict, positions: list) -> str:
-    a = analysis
-    tf = a.get("timeframe_breakdown", {})
+def generate_report(analysis: dict, positions: list) -> str:
+    a  = analysis
     dr = a.get("date_range", {})
+    tf = a.get("timeframe_breakdown", {})
+    ab = a.get("asset_breakdown", {})
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     lines = []
-    lines.append(f"# Анализ трейдера guh123")
-    lines.append(f"> Wallet: `{TARGET}`")
-    lines.append(f"> Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    lines.append("## 📊 Общая статистика")
-    lines.append("")
-    lines.append(f"| Метрика | Значение |")
-    lines.append(f"|---------|---------|")
-    lines.append(f"| **Всего сделок** | {a['total_trades']:,} |")
-    lines.append(f"| **Объём USDC** | ${a['total_volume_usdc']:,.2f} |")
-    lines.append(f"| **Оценка комиссий** | ${a['total_fees_est']:,.2f} |")
-    lines.append(f"| **Средняя сделка** | ${a['avg_trade_size_usdc']:.2f} |")
-    lines.append(f"| **Темп** | {a['trade_freq_per_min']:.2f} трейдов/мин |")
-    lines.append(f"| **Уникальных рынков** | {a['unique_markets']:,} |")
-    lines.append(f"| **Neg-risk рынков** | {a['neg_risk_markets_count']:,} |")
-    lines.append(f"| **Период** | {dr.get('from','?')} → {dr.get('to','?')} |")
-    lines.append(f"| **Длительность** | {dr.get('span_hours', 0):.1f} ч |")
-    lines.append("")
+    lines += [
+        f"# 🔬 Анализ трейдера guh123 (Wry-Leaker)",
+        f"> **Wallet**: `{TARGET}`  ",
+        f"> **Сгенерировано**: {now}",
+        "",
+        "---",
+        "",
+        "## 📊 Общая статистика",
+        "",
+        "| Метрика | Значение |",
+        "|---------|---------|",
+        f"| **Всего трейдов** | {a['total_trades']:,} |",
+        f"| **Объём USDC** | ${a['total_volume_usdc']:,.2f} |",
+        f"| **Средний трейд** | ${a['avg_trade_size_usdc']:.2f} USDC |",
+        f"| **Темп** | {a['trade_freq_per_min']:.2f} трейдов/мин |",
+        f"| **Объём/час** | ${a['vol_per_hour']:,.2f} USDC |",
+        f"| **Уникальных рынков** | {a['unique_markets']:,} |",
+        f"| **Уникальных окон (event)** | {a['unique_windows']:,} |",
+        f"| **Окон с BTC+ETH** | {a['dual_asset_windows']:,} ({a['dual_asset_windows']/max(a['unique_windows'],1)*100:.1f}%) |",
+        f"| **Окон с Up+Down** | {a['both_sides_windows']:,} ({a['both_sides_windows']/max(a['unique_windows'],1)*100:.1f}%) |",
+        f"| **Neg-risk рынков** | {a['neg_risk_count']:,} |",
+        f"| **Период** | {dr.get('from','?')} → {dr.get('to','?')} |",
+        f"| **Длительность** | {dr.get('span_hours', 0):.2f} ч |",
+        "",
+    ]
 
-    lines.append("## ⏱️ Разбивка по таймфреймам")
-    lines.append("")
-    lines.append(f"| Таймфрейм | Трейдов | Объём USDC | Рынков |")
-    lines.append(f"|-----------|---------|------------|--------|")
-    for tname, tstats in sorted(tf.items(), key=lambda x: -x[1]["volume"]):
-        lines.append(f"| **{tname}** | {tstats['trades']:,} | ${tstats['volume']:,.2f} | {tstats['markets']:,} |")
-    lines.append("")
+    lines += [
+        "## ⏱️ Разбивка по таймфреймам",
+        "",
+        "| Таймфрейм | Трейдов | Объём USDC | % объёма | Рынков |",
+        "|-----------|---------|------------|----------|--------|",
+    ]
+    for tname, ts in tf.items():
+        pct = ts["volume"] / max(a["total_volume_usdc"], 1) * 100
+        lines.append(f"| **{tname}** | {ts['trades']:,} | ${ts['volume']:,.2f} | {pct:.1f}% | {ts['markets']:,} |")
 
-    lines.append("## 💰 Топ размеры ордеров (USDC)")
-    lines.append("")
-    lines.append(f"| Размер ($) | Кол-во трейдов |")
-    lines.append(f"|------------|----------------|")
-    for size, cnt in a.get("top_sizes", [])[:15]:
-        lines.append(f"| **${size}** | {cnt:,} |")
-    lines.append("")
+    lines += [
+        "",
+        "## 🪙 Разбивка по активам",
+        "",
+        "| Актив | Трейдов | Объём USDC | % объёма |",
+        "|-------|---------|------------|----------|",
+    ]
+    for aname, ast in ab.items():
+        pct = ast["volume"] / max(a["total_volume_usdc"], 1) * 100
+        lines.append(f"| **{aname}** | {ast['trades']:,} | ${ast['volume']:,.2f} | {pct:.1f}% |")
 
-    lines.append("## 🕐 Активность по часам (UTC)")
-    lines.append("")
-    lines.append(f"| Час UTC | Объём USDC |")
-    lines.append(f"|---------|------------|")
-    for hour, vol in sorted(a.get("top_hours_by_volume", [])[:24], key=lambda x: x[0]):
-        lines.append(f"| {hour} | ${vol:,.2f} |")
-    lines.append("")
+    lines += [
+        "",
+        "## 💰 Топ размеры ордеров (USDC/трейд)",
+        "",
+        "| Размер ($) | Кол-во трейдов | % от всех |",
+        "|------------|----------------|-----------|",
+    ]
+    for size, cnt in a.get("top_sizes", [])[:20]:
+        pct = cnt / max(a["total_trades"], 1) * 100
+        lines.append(f"| **${size:.2f}** | {cnt:,} | {pct:.1f}% |")
 
-    lines.append("## 🏆 Топ рынков по объёму")
-    lines.append("")
-    lines.append(f"| Рынок | ТФ | Трейдов | Объём | Up trades | Down trades |")
-    lines.append(f"|-------|----|---------|-------|-----------|-------------|")
-    for m in a.get("top_markets_by_volume", [])[:20]:
-        q = (m["question"] or m["slug"] or m["condition_id"])[:60]
+    lines += [
+        "",
+        "## 🕐 Активность по часам UTC",
+        "",
+        "| Час | Трейдов | Объём USDC |",
+        "|-----|---------|------------|",
+    ]
+    for hour in sorted(a.get("hourly_volume", {}).keys()):
+        vol = a["hourly_volume"][hour]
+        cnt = a["hourly_trades"].get(hour, 0)
+        lines.append(f"| {hour} | {cnt:,} | ${vol:,.2f} |")
+
+    lines += [
+        "",
+        "## 🏆 Топ-20 окон по объёму (event-level)",
+        "",
+        "| Event Slug | Активы | Трейдов | Объём | Up | Down |",
+        "|------------|--------|---------|-------|----|------|",
+    ]
+    for w in a.get("windows_sample", []):
         lines.append(
-            f"| {q} | {m['timeframe']} | {m['trades']:,} | ${m['volume_usdc']:,.2f} "
-            f"| {m['buy_yes']} | {m['buy_no']} |"
+            f"| `{w['event_slug']}` | {'+'.join(w['assets'])} | {w['trades']:,} "
+            f"| ${w['volume_usdc']:,.2f} | {w['buy_up']} | {w['buy_down']} |"
         )
-    lines.append("")
 
-    lines.append("## 🔬 Neg-Risk арбитраж (лучшие спреды)")
-    lines.append("")
-    lines.append(f"| Рынок | ТФ | Спред | Avg Yes | Avg No |")
-    lines.append(f"|-------|----|-------|---------|--------|")
-    for nr in a.get("neg_risk_best", [])[:15]:
-        q = (nr["question"])[:60]
+    lines += [
+        "",
+        "## 🔬 Neg-Risk арбитраж (up+down < 1.0)",
+        "",
+        "| Рынок | Актив | ТФ | Спред | Avg Up | Avg Down | Трейдов |",
+        "|-------|-------|----|-------|--------|----------|---------|",
+    ]
+    for nr in a.get("neg_risk_top", [])[:15]:
+        q = nr["question"][:55]
         lines.append(
-            f"| {q} | {nr['timeframe']} | **{nr['spread']:.4f}** "
-            f"| {nr['avg_yes']:.4f} | {nr['avg_no']:.4f} |"
+            f"| {q} | {nr['asset']} | {nr['timeframe']} "
+            f"| **{nr['spread']:.4f}** | {nr['avg_up']:.4f} | {nr['avg_down']:.4f} | {nr['trades']} |"
         )
-    lines.append("")
-
-    # Gamma activity
-    if activity:
-        lines.append("## 📈 Gamma API — Сводка профиля")
-        lines.append("")
-        lines.append("```json")
-        lines.append(json.dumps(activity, indent=2, ensure_ascii=False)[:3000])
-        lines.append("```")
-        lines.append("")
 
     # Positions
     if positions:
-        lines.append(f"## 📌 Текущие позиции ({len(positions)} шт.)")
-        lines.append("")
-        lines.append(f"| Рынок | Outcome | Size | Value |")
-        lines.append(f"|-------|---------|------|-------|")
-        for p in sorted(positions, key=lambda x: -safe_float(x.get("value", 0)))[:20]:
-            q = (p.get("title", p.get("market", "?")) or "?")[:50]
+        lines += [
+            "",
+            f"## 📌 Текущие позиции ({len(positions)} шт.)",
+            "",
+            "| Рынок | Outcome | Size | Avg Price | Current Value | Cash PnL | Neg-Risk |",
+            "|-------|---------|------|-----------|---------------|----------|----------|",
+        ]
+        for p in sorted(positions, key=lambda x: -abs(float(x.get("cashPnl", 0)))):
+            q    = (p.get("title", "") or "?")[:45]
+            neg  = "✅" if p.get("negativeRisk") else "—"
+            cpnl = float(p.get("cashPnl", 0))
+            sign = "+" if cpnl >= 0 else ""
             lines.append(
                 f"| {q} | {p.get('outcome','?')} "
-                f"| {safe_float(p.get('size', 0)):.2f} "
-                f"| ${safe_float(p.get('value', p.get('currentValue', 0))):.2f} |"
+                f"| {float(p.get('size',0)):,.1f} "
+                f"| {float(p.get('avgPrice',0)):.3f} "
+                f"| ${float(p.get('currentValue',0)):,.2f} "
+                f"| {sign}${cpnl:,.2f} "
+                f"| {neg} |"
             )
-        lines.append("")
 
-    lines.append("---")
-    lines.append("## 🧠 Стратегические выводы")
+    lines += [
+        "",
+        "---",
+        "## 🧠 Стратегические выводы",
+        "",
+    ]
+
+    tf_5m   = tf.get("5m", {})
+    pct_5m  = tf_5m.get("volume", 0) / max(a["total_volume_usdc"], 1) * 100
+    pct_da  = a["dual_asset_windows"] / max(a["unique_windows"], 1) * 100
+    pct_bs  = a["both_sides_windows"] / max(a["unique_windows"], 1) * 100
+    nr_pct  = a["neg_risk_count"] / max(a["unique_markets"], 1) * 100
+
+    top_size_pct = sum(c for _, c in a.get("top_sizes", [])[:3]) / max(a["total_trades"], 1) * 100
+    dominant_s   = [f"${s:.2f}" for s, _ in a.get("top_sizes", [])[:3]]
+
+    lines.append(f"### 1. Тип: Детерминированный алго-бот")
+    lines.append(f"- Темп {a['trade_freq_per_min']:.2f} трейдов/мин физически невозможен для человека")
+    lines.append(f"- Топ-3 размера ордеров ({', '.join(dominant_s)}) составляют **{top_size_pct:.1f}%** всех трейдов → фиксированные лоты")
     lines.append("")
-
-    # Auto-derive conclusions
-    total = a["total_trades"]
-    nr_pct = (a["neg_risk_markets_count"] / a["unique_markets"] * 100) if a["unique_markets"] else 0
-    tf_5m = tf.get("5m", {})
-    tf_15m = tf.get("15m", {})
-    pct_5m  = (tf_5m.get("volume", 0) / a["total_volume_usdc"] * 100) if a["total_volume_usdc"] else 0
-    pct_15m = (tf_15m.get("volume", 0) / a["total_volume_usdc"] * 100) if a["total_volume_usdc"] else 0
-
-    top_sizes_list = a.get("top_sizes", [])
-    dominant_sizes = [s for s, c in top_sizes_list[:3] if c > total * 0.05]
-
-    lines.append(f"1. **Тип**: Алго-бот (не человек). Темп {a['trade_freq_per_min']:.2f} трейдов/мин недостижим вручную.")
-    lines.append(f"2. **Фокус**: {pct_5m:.1f}% объёма в 5m рынках, {pct_15m:.1f}% в 15m рынках.")
-    lines.append(f"3. **Neg-risk арбитраж**: {nr_pct:.1f}% рынков имеют neg-risk структуру (up_price + down_price < 1.0).")
-    if dominant_sizes:
-        lines.append(f"4. **Фиксированные размеры ордеров**: Доминируют размеры {dominant_sizes} USDC → детерминированный бот.")
-    lines.append(f"5. **Масштаб**: ${a['total_volume_usdc']:,.2f} USDC за {dr.get('span_hours',0):.1f} ч = ${a['total_volume_usdc']/max(dr.get('span_hours',1),1):,.2f}/ч.")
-    lines.append(f"6. **Комиссии**: ~${a['total_fees_est']:,.2f} (оценка) = {a['total_fees_est']/max(a['total_volume_usdc'],1)*100:.3f}% от объёма.")
+    lines.append(f"### 2. Фокус: 5-минутные рынки BTC/ETH")
+    lines.append(f"- **{pct_5m:.1f}%** объёма — 5m рынки")
+    lines.append(f"- BTC и ETH — единственные торгуемые активы")
+    lines.append(f"- **{pct_da:.1f}%** окон — одновременно BTC + ETH")
+    lines.append("")
+    lines.append(f"### 3. Стратегия: Neg-Risk (Negative Risk) арбитраж")
+    lines.append(f"- **{pct_bs:.1f}%** окон — трейдит одновременно Up + Down")
+    lines.append(f"- {a['neg_risk_count']} рынков с подтверждённым neg-risk спредом")
+    lines.append(f"- Механика: покупает Up и Down одновременно когда P(Up) + P(Down) < 1.0")
+    lines.append(f"- Profit = (1 - купленная цена) × лот при любом исходе")
+    lines.append("")
+    lines.append(f"### 4. Масштаб операций")
+    lines.append(f"- ${a['total_volume_usdc']:,.2f} USDC за {dr.get('span_hours',0):.2f} ч = **${a['vol_per_hour']:,.2f}/час**")
+    lines.append(f"- {a['unique_windows']:,} уникальных 5-min окон = **~{a['unique_windows'] / max(dr.get('span_hours',1),1):.1f} окон/час**")
+    lines.append("")
+    lines.append(f"### 5. Риск-профиль")
+    lines.append(f"- Текущие позиции: {len(positions)} открытых")
+    if positions:
+        total_cv  = sum(float(p.get("currentValue", 0)) for p in positions)
+        total_pnl = sum(float(p.get("cashPnl", 0)) for p in positions)
+        lines.append(f"- Суммарный текущий value: **${total_cv:,.2f}**")
+        lines.append(f"- Суммарный unrealized PnL: **${total_pnl:,.2f}**")
     lines.append("")
 
     return "\n".join(lines)
@@ -399,28 +516,26 @@ def generate_report(analysis: dict, activity: dict, positions: list) -> str:
 
 def main():
     print("=" * 60)
-    print(f"Polymarket Trader Analysis")
+    print("Polymarket Trader Analysis — guh123")
     print(f"Target: {TARGET}")
     print("=" * 60)
 
-    # 1. Fetch trades
+    # 1. Fetch trades (with pagination)
     trades = fetch_all_trades(TARGET)
     print(f"\n[✓] Fetched {len(trades)} trades total")
 
-    # 2. Fetch auxiliary data in parallel (activity + positions)
-    print("[*] Fetching activity and positions...")
-    activity  = fetch_activity(TARGET)
+    # 2. Fetch positions
+    print("[*] Fetching positions...")
     positions = fetch_positions(TARGET)
-    print(f"[✓] Activity: {len(activity)} fields | Positions: {len(positions)}")
+    print(f"[✓] Positions: {len(positions)}")
 
     # 3. Save raw data
     raw_payload = {
-        "target": TARGET,
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "target":       TARGET,
+        "fetched_at":   datetime.now(timezone.utc).isoformat(),
         "trades_count": len(trades),
-        "trades": trades,
-        "activity": activity,
-        "positions": positions,
+        "trades":       trades,
+        "positions":    positions,
     }
     with open(RAW_FILE, "w") as f:
         json.dump(raw_payload, f, indent=2, ensure_ascii=False)
@@ -430,30 +545,45 @@ def main():
     print("[*] Analyzing...")
     analysis = analyze_trades(trades)
 
-    # 5. Generate report
-    report = generate_report(analysis, activity, positions)
+    # 5. Generate + save report
+    report = generate_report(analysis, positions)
     with open(REPORT_FILE, "w") as f:
         f.write(report)
     print(f"[✓] Report saved → {REPORT_FILE}")
 
-    # 6. Print key stats
+    # 6. Terminal summary
     print("\n" + "=" * 60)
     print("KEY FINDINGS")
     print("=" * 60)
-    print(f"  Total trades    : {analysis.get('total_trades', 0):,}")
-    print(f"  Total volume    : ${analysis.get('total_volume_usdc', 0):,.2f} USDC")
-    print(f"  Avg trade size  : ${analysis.get('avg_trade_size_usdc', 0):.2f}")
-    print(f"  Trade freq      : {analysis.get('trade_freq_per_min', 0):.2f} /min")
-    print(f"  Unique markets  : {analysis.get('unique_markets', 0):,}")
-    print(f"  Neg-risk mkts   : {analysis.get('neg_risk_markets_count', 0):,}")
-    dr = analysis.get("date_range", {})
-    print(f"  Period          : {dr.get('from','?')} → {dr.get('to','?')}")
-    print(f"  Span            : {dr.get('span_hours', 0):.1f} hours")
-    tf = analysis.get("timeframe_breakdown", {})
-    for tfname in ("5m", "15m", "1h", "daily", "other"):
-        if tfname in tf:
-            s = tf[tfname]
-            print(f"  [{tfname:5s}] trades={s['trades']:,} vol=${s['volume']:,.2f}")
+    a  = analysis
+    dr = a.get("date_range", {})
+    print(f"  Total trades      : {a['total_trades']:,}")
+    print(f"  Total volume      : ${a['total_volume_usdc']:,.2f} USDC")
+    print(f"  Avg trade size    : ${a['avg_trade_size_usdc']:.2f}")
+    print(f"  Trade freq        : {a['trade_freq_per_min']:.2f} /min")
+    print(f"  Vol/hour          : ${a['vol_per_hour']:,.2f}")
+    print(f"  Unique markets    : {a['unique_markets']:,}")
+    print(f"  Unique windows    : {a['unique_windows']:,}")
+    print(f"  Dual-asset windows: {a['dual_asset_windows']:,} ({a['dual_asset_windows']/max(a['unique_windows'],1)*100:.1f}%)")
+    print(f"  Both-sides windows: {a['both_sides_windows']:,} ({a['both_sides_windows']/max(a['unique_windows'],1)*100:.1f}%)")
+    print(f"  Neg-risk markets  : {a['neg_risk_count']:,}")
+    print(f"  Period            : {dr.get('from','?')} → {dr.get('to','?')}")
+    print(f"  Span              : {dr.get('span_hours', 0):.2f} hours")
+    print("-" * 60)
+    print("  TIMEFRAME BREAKDOWN:")
+    for tname, ts in a.get("timeframe_breakdown", {}).items():
+        pct = ts["volume"] / max(a["total_volume_usdc"], 1) * 100
+        print(f"  [{tname:5s}] {ts['trades']:,} trades | ${ts['volume']:,.2f} ({pct:.1f}%)")
+    print("-" * 60)
+    print("  ASSET BREAKDOWN:")
+    for aname, ast in a.get("asset_breakdown", {}).items():
+        pct = ast["volume"] / max(a["total_volume_usdc"], 1) * 100
+        print(f"  [{aname:5s}] {ast['trades']:,} trades | ${ast['volume']:,.2f} ({pct:.1f}%)")
+    print("-" * 60)
+    print("  TOP TRADE SIZES:")
+    for size, cnt in a.get("top_sizes", [])[:10]:
+        pct = cnt / max(a["total_trades"], 1) * 100
+        print(f"  ${size:6.2f}: {cnt:,} times ({pct:.1f}%)")
     print("=" * 60)
     print("\n[✓] Analysis complete.")
 
