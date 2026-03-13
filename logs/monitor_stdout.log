@@ -1,0 +1,305 @@
+============================================================
+  Polymarket Live Spread Monitor
+  Assets        : BTC, ETH, SOL
+  Poll interval : 5s
+============================================================
+Checking geo-location …
+  IP: 34.87.175.229  |  Country: SG  |  City: Singapore
+  [1;31mWARNING: Polymarket geo-BLOCKED (country=?)[0m
+  Set POLYMARKET_PROXY_URL env var to bypass geo-block.
+
+Logging to: /content/ouroboros_repo/logs/spread_log.csv
+Press Ctrl+C to stop.
+
+[20:17:21] BTC 5m | No active market — skipping
+[20:17:21] ETH 5m | No active market — skipping
+[20:17:21] SOL 5m | No active market — skipping
+
+[20:17:26] BTC 5m | No active market — skipping
+[20:17:26] ETH 5m | No active market — skipping
+[20:17:26] SOL 5m | No active market — skipping
+
+[20:17:32] BTC 5m | No active market — skipping
+[20:17:32] ETH 5m | No active market — skipping
+[20:17:32] SOL 5m | No active market — skipping
+
+[20:17:37] BTC 5m | No active market — skipping
+[20:17:37] ETH 5m | No active market — skipping
+[20:17:37] SOL 5m | No active market — skipping
+
+[20:17:42] BTC 5m | No active market — skipping
+[20:17:42] ETH 5m | No active market — skipping
+[20:17:42] SOL 5m | No active market — skipping
+
+[20:17:47] BTC 5m | No active market — skipping
+[20:17:47] ETH 5m | No active market — skipping
+[20:17:47] SOL 5m | No active market — skipping
+
+[20:17:52] BTC 5m | No active market — skipping
+[20:17:52] ETH 5m | No active market — skipping
+[20:17:52] SOL 5m | No active market — skipping
+
+[20:17:57] BTC 5m | No active market — skipping
+[20:17:57] ETH 5m | No active market — skipping
+[20:17:57] SOL 5m | No active market — skipping
+
+[20:18:02] BTC 5m | No active market — skipping
+[20:18:02] ETH 5m | No active market — skipping
+[20:18:02] SOL 5m | No active market — skipping
+
+[20:18:07] BTC 5m | No active market — skipping
+[20:18:07] ETH 5m | No active market — skipping
+[20:18:07] SOL 5m | No active market — skipping
+
+[20:18:12] BTC 5m | No active market — skipping
+[20:18:12] ETH 5m | No active market — skipping
+[20:18:12] SOL 5m | No active market — skipping
+
+[20:18:18] BTC 5m | No active market — skipping
+[20:18:18] ETH 5m | No active market — skipping
+[20:18:18] SOL 5m | No active market — skipping
+
+[20:18:23] BTC 5m | No active market — skipping
+[20:18:23] ETH 5m | No active market — skipping
+[20:18:23] SOL 5m | No active market — skipping
+
+[20:18:28] BTC 5m | No active market — skipping
+[20:18:28] ETH 5m | No active market — skipping
+[20:18:28] SOL 5m | No active market — skipping
+
+[20:18:34] BTC 5m | No active market — skipping
+[20:18:34] ETH 5m | No active market — skipping
+[20:18:34] SOL 5m | No active market — skipping
+
+[20:18:39] BTC 5m | No active market — skipping
+[20:18:39] ETH 5m | No active market — skipping
+[20:18:39] SOL 5m | No active market — skipping
+
+[20:18:44] BTC 5m | No active market — skipping
+[20:18:44] ETH 5m | No active market — skipping
+[20:18:44] SOL 5m | No active market — skipping
+
+[20:18:49] BTC 5m | No active market — skipping
+[20:18:49] ETH 5m | No active market — skipping
+[20:18:49] SOL 5m | No active market — skipping
+
+[20:18:54] BTC 5m | No active market — skipping
+[20:18:54] ETH 5m | No active market — skipping
+[20:18:54] SOL 5m | No active market — skipping
+
+[20:18:59] BTC 5m | No active market — skipping
+[20:18:59] ETH 5m | No active market — skipping
+[20:18:59] SOL 5m | No active market — skipping
+
+[20:19:04] BTC 5m | No active market — skipping
+[20:19:04] ETH 5m | No active market — skipping
+[20:19:04] SOL 5m | No active market — skipping
+
+[20:19:09] BTC 5m | No active market — skipping
+[20:19:09] ETH 5m | No active market — skipping
+[20:19:09] SOL 5m | No active market — skipping
+
+[20:19:15] BTC 5m | No active market — skipping
+[20:19:15] ETH 5m | No active market — skipping
+[20:19:15] SOL 5m | No active market — skipping
+
+[20:19:20] BTC 5m | No active market — skipping
+[20:19:20] ETH 5m | No active market — skipping
+[20:19:20] SOL 5m | No active market — skipping
+
+[20:19:25] BTC 5m | No active market — skipping
+[20:19:25] ETH 5m | No active market — skipping
+[20:19:25] SOL 5m | No active market — skipping
+
+[20:19:30] BTC 5m | No active market — skipping
+[20:19:30] ETH 5m | No active market — skipping
+[20:19:30] SOL 5m | No active market — skipping
+
+[20:19:35] BTC 5m | No active market — skipping
+[20:19:35] ETH 5m | No active market — skipping
+[20:19:35] SOL 5m | No active market — skipping
+
+[20:19:40] BTC 5m | No active market — skipping
+[20:19:40] ETH 5m | No active market — skipping
+[20:19:40] SOL 5m | No active market — skipping
+
+[20:19:45] BTC 5m | No active market — skipping
+[20:19:45] ETH 5m | No active market — skipping
+[20:19:45] SOL 5m | No active market — skipping
+
+[20:19:50] BTC 5m | No active market — skipping
+[20:19:50] ETH 5m | No active market — skipping
+[20:19:50] SOL 5m | No active market — skipping
+
+[20:19:55] BTC 5m | No active market — skipping
+[20:19:55] ETH 5m | No active market — skipping
+[20:19:55] SOL 5m | No active market — skipping
+
+[20:20:01] BTC 5m | No active market — skipping
+[20:20:01] ETH 5m | No active market — skipping
+[20:20:01] SOL 5m | No active market — skipping
+
+[20:20:06] BTC 5m | No active market — skipping
+[20:20:06] ETH 5m | No active market — skipping
+[20:20:06] SOL 5m | No active market — skipping
+
+[20:20:11] BTC 5m | No active market — skipping
+[20:20:11] ETH 5m | No active market — skipping
+[20:20:11] SOL 5m | No active market — skipping
+
+[20:20:16] BTC 5m | No active market — skipping
+[20:20:16] ETH 5m | No active market — skipping
+[20:20:16] SOL 5m | No active market — skipping
+
+[20:20:21] BTC 5m | No active market — skipping
+[20:20:21] ETH 5m | No active market — skipping
+[20:20:21] SOL 5m | No active market — skipping
+
+[20:20:26] BTC 5m | No active market — skipping
+[20:20:26] ETH 5m | No active market — skipping
+[20:20:26] SOL 5m | No active market — skipping
+
+[20:20:31] BTC 5m | No active market — skipping
+[20:20:31] ETH 5m | No active market — skipping
+[20:20:31] SOL 5m | No active market — skipping
+
+[20:20:36] BTC 5m | No active market — skipping
+[20:20:36] ETH 5m | No active market — skipping
+[20:20:36] SOL 5m | No active market — skipping
+
+[20:20:41] BTC 5m | No active market — skipping
+[20:20:41] ETH 5m | No active market — skipping
+[20:20:41] SOL 5m | No active market — skipping
+
+[20:20:47] BTC 5m | No active market — skipping
+[20:20:47] ETH 5m | No active market — skipping
+[20:20:47] SOL 5m | No active market — skipping
+
+[20:20:52] BTC 5m | No active market — skipping
+[20:20:52] ETH 5m | No active market — skipping
+[20:20:52] SOL 5m | No active market — skipping
+
+[20:20:57] BTC 5m | No active market — skipping
+[20:20:57] ETH 5m | No active market — skipping
+[20:20:57] SOL 5m | No active market — skipping
+
+[20:21:02] BTC 5m | No active market — skipping
+[20:21:02] ETH 5m | No active market — skipping
+[20:21:02] SOL 5m | No active market — skipping
+
+[20:21:07] BTC 5m | No active market — skipping
+[20:21:07] ETH 5m | No active market — skipping
+[20:21:07] SOL 5m | No active market — skipping
+
+[20:21:12] BTC 5m | No active market — skipping
+[20:21:12] ETH 5m | No active market — skipping
+[20:21:12] SOL 5m | No active market — skipping
+
+[20:21:17] BTC 5m | No active market — skipping
+[20:21:17] ETH 5m | No active market — skipping
+[20:21:17] SOL 5m | No active market — skipping
+
+[20:21:22] BTC 5m | No active market — skipping
+[20:21:22] ETH 5m | No active market — skipping
+[20:21:22] SOL 5m | No active market — skipping
+
+[20:21:28] BTC 5m | No active market — skipping
+[20:21:28] ETH 5m | No active market — skipping
+[20:21:28] SOL 5m | No active market — skipping
+
+[20:21:33] BTC 5m | No active market — skipping
+[20:21:33] ETH 5m | No active market — skipping
+[20:21:33] SOL 5m | No active market — skipping
+
+[20:21:39] BTC 5m | No active market — skipping
+[20:21:39] ETH 5m | No active market — skipping
+[20:21:39] SOL 5m | No active market — skipping
+
+[20:21:44] BTC 5m | No active market — skipping
+[20:21:44] ETH 5m | No active market — skipping
+[20:21:44] SOL 5m | No active market — skipping
+
+[20:21:49] BTC 5m | No active market — skipping
+[20:21:49] ETH 5m | No active market — skipping
+[20:21:49] SOL 5m | No active market — skipping
+
+[20:21:54] BTC 5m | No active market — skipping
+[20:21:54] ETH 5m | No active market — skipping
+[20:21:54] SOL 5m | No active market — skipping
+
+[20:21:59] BTC 5m | No active market — skipping
+[20:21:59] ETH 5m | No active market — skipping
+[20:21:59] SOL 5m | No active market — skipping
+
+[20:22:04] BTC 5m | No active market — skipping
+[20:22:04] ETH 5m | No active market — skipping
+[20:22:04] SOL 5m | No active market — skipping
+
+[20:22:09] BTC 5m | No active market — skipping
+[20:22:09] ETH 5m | No active market — skipping
+[20:22:09] SOL 5m | No active market — skipping
+
+[20:22:14] BTC 5m | No active market — skipping
+[20:22:14] ETH 5m | No active market — skipping
+[20:22:14] SOL 5m | No active market — skipping
+
+[20:22:19] BTC 5m | No active market — skipping
+[20:22:19] ETH 5m | No active market — skipping
+[20:22:19] SOL 5m | No active market — skipping
+
+[20:22:25] BTC 5m | No active market — skipping
+[20:22:25] ETH 5m | No active market — skipping
+[20:22:25] SOL 5m | No active market — skipping
+
+[20:22:30] BTC 5m | No active market — skipping
+[20:22:30] ETH 5m | No active market — skipping
+[20:22:30] SOL 5m | No active market — skipping
+
+[20:22:35] BTC 5m | No active market — skipping
+[20:22:35] ETH 5m | No active market — skipping
+[20:22:35] SOL 5m | No active market — skipping
+
+[20:22:40] BTC 5m | No active market — skipping
+[20:22:40] ETH 5m | No active market — skipping
+[20:22:40] SOL 5m | No active market — skipping
+
+[20:22:45] BTC 5m | No active market — skipping
+[20:22:45] ETH 5m | No active market — skipping
+[20:22:45] SOL 5m | No active market — skipping
+
+[20:22:50] BTC 5m | No active market — skipping
+[20:22:50] ETH 5m | No active market — skipping
+[20:22:50] SOL 5m | No active market — skipping
+
+[20:22:55] BTC 5m | No active market — skipping
+[20:22:55] ETH 5m | No active market — skipping
+[20:22:55] SOL 5m | No active market — skipping
+
+[20:23:00] BTC 5m | No active market — skipping
+[20:23:00] ETH 5m | No active market — skipping
+[20:23:00] SOL 5m | No active market — skipping
+
+[20:23:05] BTC 5m | No active market — skipping
+[20:23:05] ETH 5m | No active market — skipping
+[20:23:05] SOL 5m | No active market — skipping
+
+[20:23:10] BTC 5m | No active market — skipping
+[20:23:10] ETH 5m | No active market — skipping
+[20:23:10] SOL 5m | No active market — skipping
+
+[20:23:16] BTC 5m | No active market — skipping
+[20:23:16] ETH 5m | No active market — skipping
+[20:23:16] SOL 5m | No active market — skipping
+
+[20:23:21] BTC 5m | No active market — skipping
+[20:23:21] ETH 5m | No active market — skipping
+[20:23:21] SOL 5m | No active market — skipping
+
+[20:23:26] BTC 5m | No active market — skipping
+[20:23:26] ETH 5m | No active market — skipping
+[20:23:26] SOL 5m | No active market — skipping
+
+[20:23:31] BTC 5m | No active market — skipping
+[20:23:31] ETH 5m | No active market — skipping
+[20:23:31] SOL 5m | No active market — skipping
+
