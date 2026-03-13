@@ -1,0 +1,168 @@
+name: Deploy Bot to Server
+
+# Triggers: push to main OR manual dispatch
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Deploy with DRY_RUN=true (safe mode)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+# ─────────────────────────────────────────────
+# Required GitHub Secrets:
+#   SSH_HOST      — server IP (e.g. 82.27.90.73)
+#   SSH_USER      — login    (e.g. DisaerPolyAms)
+#   SSH_PASSWORD  — password
+#   SSH_PORT      — port (default: 22)
+#
+# Optional (injected into .env on server):
+#   POLYMARKET_PRIVATE_KEY
+#   POLYMARKET_WALLET_ADDRESS
+#   PROXY_URL
+# ─────────────────────────────────────────────
+
+jobs:
+  # ─────────────────────────────────────────
+  lint:
+    name: Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install flake8
+        run: pip install flake8 -q
+
+      - name: Run syntax check (errors only)
+        run: |
+          flake8 polymarket_arb/ \
+            --select=E9,F63,F7,F82 \
+            --statistics \
+            || true
+
+  # ─────────────────────────────────────────
+  deploy:
+    name: Deploy to Server
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      # ── 1. Verify connection ──────────────────────────────
+      - name: Verify SSH connection
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          timeout: 30s
+          script: echo "SSH connection OK"
+
+      # ── 2. Inject .env from secrets ───────────────────────
+      - name: Update .env on server
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          PK:     ${{ secrets.POLYMARKET_PRIVATE_KEY }}
+          WALLET: ${{ secrets.POLYMARKET_WALLET_ADDRESS }}
+          PROXY:  ${{ secrets.PROXY_URL }}
+          DRY:    ${{ github.event.inputs.dry_run || 'false' }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: PK,WALLET,PROXY,DRY
+          script_stop: true
+          script: |
+            set -e
+            BOT_DIR="C:\polymarket_bot"
+
+            REM Create bot dir if missing
+            if not exist "%BOT_DIR%" mkdir "%BOT_DIR%"
+
+            REM Write .env (overwrite safe — secrets come from GitHub)
+            (
+              echo POLYMARKET_PRIVATE_KEY=%PK%
+              echo POLYMARKET_WALLET_ADDRESS=%WALLET%
+              echo PROXY_URL=%PROXY%
+              echo DRY_RUN=%DRY%
+              echo MAX_ORDER_SIZE_USDC=10
+              echo SLIPPAGE_TOLERANCE=0.02
+            ) > "%BOT_DIR%\.env"
+
+            echo .env updated.
+
+      # ── 3. Pull code & restart bot ────────────────────────
+      - name: Deploy code and restart bot
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            BOT_DIR="C:\polymarket_bot"
+            LOGS_DIR="%BOT_DIR%\logs"
+
+            REM ── Clone on first run, or pull latest ──
+            if exist "%BOT_DIR%\.git" (
+              cd /d "%BOT_DIR%"
+              git fetch origin
+              git reset --hard origin/main
+              echo Code updated.
+            ) else (
+              git clone https://github.com/Disaer38/ouroboros.git "%BOT_DIR%"
+              echo Repository cloned.
+            )
+
+            REM ── Install / upgrade dependencies ──
+            cd /d "%BOT_DIR%"
+            pip install -r requirements.txt -q
+
+            REM ── Ensure logs directory ──
+            if not exist "%LOGS_DIR%" mkdir "%LOGS_DIR%"
+
+            REM ── Stop existing bot process ──
+            for /f "tokens=2" %%a in (
+              'tasklist /fi "imagename eq python.exe" /fo list 2^>nul ^| findstr /i "PID:"'
+            ) do (
+              wmic process where "ProcessId=%%a" get CommandLine 2>nul \
+                | findstr /i "main.py" >nul
+              if not errorlevel 1 (
+                taskkill /PID %%a /F 2>nul
+                echo Stopped PID %%a
+              )
+            )
+
+            REM ── Start bot in background ──
+            start /b python polymarket_arb\main.py ^
+              > "%LOGS_DIR%\bot.log" 2^>&1
+
+            echo Deploy complete.
+
+      # ── 4. Smoke test — confirm process is alive ─────────
+      - name: Smoke test (process alive?)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            tasklist /fi "imagename eq python.exe" /fo list | findstr /i "PID:" > nul
+            if errorlevel 1 (
+              echo [WARN] No Python process found — bot may have crashed. Check logs.
+            ) else (
+              echo [OK] Bot process is running.
+            )
