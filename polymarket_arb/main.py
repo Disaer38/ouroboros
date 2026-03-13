@@ -9,6 +9,7 @@ Usage:
     # Debug mode (see all book fetches):
     LOG_LEVEL=DEBUG python main.py
 """
+import argparse
 import asyncio
 import logging
 import sys
@@ -22,6 +23,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import POLL_INTERVAL_SEC, LOG_LEVEL
 from services.market_data import MarketDataService
 from services.execution import ExecutionService
+from services.ws_feed import WSFeed
 from strategy.neg_risk import NegativeRiskStrategy
 
 logging.basicConfig(
@@ -113,8 +115,58 @@ async def run():
             await asyncio.sleep(POLL_INTERVAL_SEC)
 
 
+async def run_ws():
+    strategy = NegativeRiskStrategy()
+    executor = ExecutionService(simulation=True)
+    opportunities_seen = 0
+
+    logger.info("=" * 60)
+    logger.info("Polymarket Neg-Risk Arb Bot | Phase 1 (WS mode, simulation)")
+    logger.info(f"Threshold : sum < {float(strategy.threshold):.4f}")
+    logger.info(f"Fees      : 2% per leg (4% round-trip)")
+    logger.info(f"Execution : simulation=True (no real orders)")
+    logger.info("=" * 60)
+
+    async with MarketDataService() as mds:
+        markets = await mds.fetch_active_markets()
+        if not markets:
+            logger.error("No active markets found. Exiting.")
+            return
+        logger.info(f"Monitoring {len(markets)} markets via WebSocket")
+
+        def on_opportunity(opp):
+            nonlocal opportunities_seen
+            opportunities_seen += 1
+            print(f"\n{'='*60}")
+            print(f"  ARBITRAGE OPPORTUNITY #{opportunities_seen}")
+            print(f"  Market  : {opp.market.slug}")
+            print(f"  Question: {opp.market.question}")
+            print(f"  UP ask  : {float(opp.up_ask):.4f} ({float(opp.up_ask_size):.1f} shares avail)")
+            print(f"  DOWN ask: {float(opp.down_ask):.4f} ({float(opp.down_ask_size):.1f} shares avail)")
+            print(f"  Sum     : {float(opp.total_cost):.4f}  (threshold: {float(strategy.threshold):.4f})")
+            print(f"  Gross   : +{float(opp.gross_edge)*100:.2f}%")
+            print(f"  Net     : +{float(opp.net_edge)*100:.2f}% (after 4% fees)")
+            print(f"  Max     : {float(opp.max_shares):.1f} shares → ${float(opp.max_profit):.4f} profit")
+            print(f"{'='*60}\n")
+            asyncio.create_task(executor.execute_neg_risk(
+                market_slug=opp.market.slug,
+                up_token_id=opp.market.up_token_id,
+                down_token_id=opp.market.down_token_id,
+                up_ask=opp.up_ask,
+                down_ask=opp.down_ask,
+                shares=min(opp.max_shares, Decimal("100")),
+            ))
+
+        feed = WSFeed(markets, on_opportunity=on_opportunity, strategy=strategy)
+        await feed.run()
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Polymarket Neg-Risk Arb Bot")
+    parser.add_argument("--ws", action="store_true", help="Use WebSocket feed instead of REST polling")
+    args = parser.parse_args()
+
     try:
-        asyncio.run(run())
+        asyncio.run(run_ws() if args.ws else run())
     except KeyboardInterrupt:
         print("\nStopped.")
