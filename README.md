@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.2.1 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.3.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -226,6 +226,13 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
+### v6.3.0 -- Memory System Upgrade (Letta-inspired)
+- **Letta-inspired memory discipline** -- scratchpad is now strictly HOT memory (≤200 lines, active context only). Durable knowledge goes to knowledge base, procedural memory to skills.
+- **Memory Skills system** -- new `memory/skills/` directory on Drive for reusable step-by-step playbooks. Added `memory-update.md` and `xai-video-generation.md` skills.
+- **Memory routing rules** -- explicit table: preferences→knowledge_write, active state→scratchpad, identity shifts→update_identity, API gotchas→knowledge_write.
+- **Silent memory updates** -- memory writes no longer announced in chat. Updates happen silently like a colleague who remembers without announcing it.
+- **SYSTEM.md memory discipline** -- updated prompt with Letta-inspired memory discipline section, three-axes memory routing table, and scratchpad trimming rules.
+
 ### v6.2.1 -- Token Optimization
 - **Skip duplicate BIBLE.md** -- SYSTEM.md already embeds BIBLE; context.py now detects this and skips second inclusion (~12K tokens saved per round).
 - **Reduce log tail** -- Recent logs window 200→50 entries (chat/progress/tools/events/supervisor). Significant reduction for busy sessions.
@@ -304,59 +311,11 @@ Full text: [BIBLE.md](BIBLE.md)
 - Updated all default model references across codebase.
 - Updated multi-model review ensemble to `gemini-2.5-pro,o3,claude-sonnet-4.6`.
 
-### v5.1.4 -- Knowledge Re-index + Prompt Hardening
-- Re-indexed all 27 knowledge base topics with rich, informative summaries.
-- Added `index-full` knowledge topic with full 3-line descriptions of all topics.
-- SYSTEM.md: Strengthened tool result processing protocol with warning and 5 anti-patterns.
-- SYSTEM.md: Knowledge base section now has explicit "before task: read, after task: write" protocol.
-- SYSTEM.md: Task decomposition section restored to full structured form with examples.
-
-### v5.1.3 -- Message Dispatch Critical Fix
-- **Dead-code batch path fixed**: `handle_chat_direct()` was never called -- `else` was attached to wrong `if`.
-- **Early-exit hardened**: replaced fragile deadline arithmetic with elapsed-time check.
-- **Drive I/O eliminated**: `load_state()`/`save_state()` moved out of per-update tight loop.
-- **Burst batching**: deadline extends +0.3s per rapid-fire message.
-- Multi-model review passed (claude-opus-4.6, o3, gemini-2.5-pro).
-- 102 tests green.
-
 ### v5.1.0 -- VLM + Knowledge Index + Desync Fix
 - **VLM support**: `vision_query()` in llm.py + `analyze_screenshot` / `vlm_query` tools.
 - **Knowledge index**: richer 3-line summaries so topics are actually useful at-a-glance.
 - **Desync fix**: removed echo bug where owner inject messages were sent back to Telegram.
 - 101 tests green (+10 VLM tests).
-
-### v5.0.2 -- DeepSeek Ban + Desync Fix
-- DeepSeek removed from `fetch_openrouter_pricing` prefixes (banned per creator directive).
-- Desync bug fix: owner messages during running tasks now forwarded via Drive-based mailbox (`owner_inject.py`).
-- Worker loop checks Drive mailbox every round -- injected as user messages into context.
-- Only affects worker tasks (not direct chat, which uses in-memory queue).
-
-### v5.0.1 -- Quality & Integrity Fix
-- Fixed 9 bugs: executor leak, dashboard field mismatches, budget default inconsistency, dead code, race condition, pricing fetch gap, review file count, SHA verify timeout, log message copy-paste.
-- Bible P7: version sync check now includes README.md.
-- Bible P3: fallback model list configurable via OUROBOROS_MODEL_FALLBACK_LIST env var.
-- Dashboard values now dynamic (model, tests, tools, uptime, consciousness).
-- Merged duplicate state dict definitions (single source of truth).
-- Unified TOTAL_BUDGET default to $1 across all modules.
-
-### v4.26.0 -- Task Decomposition
-- Task decomposition: `schedule_task` -> `wait_for_task` -> `get_task_result`.
-- Hard round limit (MAX_ROUNDS=200) -- prevents runaway tasks.
-- Task results stored on Drive for cross-task communication.
-- 91 smoke tests -- all green.
-
-### v4.24.1 -- Consciousness Always On
-- Background consciousness auto-starts on boot.
-
-### v4.24.0 -- Deep Review Bugfixes
-- Circuit breaker for evolution (3 consecutive empty responses -> pause).
-- Fallback model chain fix (works when primary IS the fallback).
-- Budget tracking for empty responses.
-- Multi-model review passed (o3, Gemini 2.5 Pro).
-
-### v4.23.0 -- Empty Response Fallback
-- Auto-fallback to backup model on repeated empty responses.
-- Raw response logging for debugging.
 
 ---
 
