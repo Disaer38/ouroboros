@@ -28,6 +28,13 @@ from .dominant.reporter import Reporter
 # ── Logging ──────────────────────────────────────────────────────────────────
 
 def _setup_logging() -> None:
+    # Fix Windows cp1252 console encoding for emoji/unicode
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
@@ -36,6 +43,8 @@ def _setup_logging() -> None:
     root.setLevel(logging.INFO)
     ch = logging.StreamHandler(sys.stdout)
     ch.setFormatter(fmt)
+    # Suppress encoding errors on Windows cp1252 consoles
+    ch.handleError = lambda record: None
     root.addHandler(ch)
     for lib in ("httpx", "httpcore", "asyncio"):
         logging.getLogger(lib).setLevel(logging.WARNING)
