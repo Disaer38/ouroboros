@@ -8,7 +8,7 @@ Discovery strategy:
   4. Fetch CLOB orderbooks and check neg-risk condition
 
 Neg-risk condition: YES_ask + NO_ask < profit_threshold
-  (default 0.97 → 3% gross margin before 2% taker fee)
+  (default 0.995 → 0.5% min margin after 2x 0.2% taker fee, per guh123 profile)
 """
 
 import asyncio
@@ -30,16 +30,16 @@ CLOB_API = "https://clob.polymarket.com"
 # Matches intraday time ranges like "3:00PM-3:05PM", "3:00PM-3:15PM"
 TIME_RANGE_RE = re.compile(r"\d+:\d+[AP]M[-–]\d+:\d+[AP]M", re.IGNORECASE)
 
-CRYPTO_KEYWORDS = ["bitcoin", "btc"]
-BTC_ONLY = True
+CRYPTO_KEYWORDS = ["bitcoin", "btc", "ethereum", "eth"]
+BTC_ONLY = False
 
 
 def _is_target_market(question: str) -> bool:
-    """Return True if this is a BTC Up/Down market."""
+    """Return True if this is a BTC or ETH Up/Down market."""
     q = question.lower()
-    is_btc = "bitcoin" in q or "btc" in q
+    is_crypto = "bitcoin" in q or "btc" in q or "ethereum" in q or "eth" in q
     has_updown = "up or down" in q
-    return is_btc and has_updown
+    return is_crypto and has_updown
 
 
 def _is_intraday(question: str) -> bool:
@@ -227,16 +227,17 @@ async def get_orderbook(client: httpx.AsyncClient, token_id: str) -> Orderbook:
 async def check_neg_risk(
     client: httpx.AsyncClient,
     market: Market,
-    profit_threshold: float = 0.97,
-    min_depth_usdc: float = 2.0,
+    profit_threshold: float = 0.995,
+    min_depth_usdc: float = 1.0,
 ) -> Optional[ArbOpportunity]:
     """
     Check if a market has a neg-risk (buy both sides) arbitrage opportunity.
 
     Args:
         profit_threshold: Enter trade if YES_ask + NO_ask < this value.
-                          0.97 = 3% gross margin (before 2% taker fee on each side).
-        min_depth_usdc:   Minimum USDC available on each side's best ask.
+                          0.995 = 0.5% min margin (covers 2x 0.2% taker fee per guh123 profile).
+        min_depth_usdc:   Minimum USDC available on each side. Lowered to 1.0 to match
+                          guh123 small lot sizes (5-24 USDC).
 
     Returns ArbOpportunity if opportunity exists, None otherwise.
     """
@@ -273,8 +274,8 @@ async def check_neg_risk(
         return None
 
     profit_pct = (1.0 - total_cost) * 100
-    # Available size limited by shallowest side, capped at $50
-    max_size = min(yes_depth, no_depth, 50.0)
+    # guh123 profile: 5-24 USDC per leg, never exceed 24
+    max_size = min(yes_depth, no_depth, 24.0)
 
     return ArbOpportunity(
         market=market,
@@ -292,8 +293,8 @@ async def check_neg_risk(
 async def scan_all(
     client: httpx.AsyncClient,
     markets: list[Market],
-    profit_threshold: float = 0.97,
-    min_depth_usdc: float = 2.0,
+    profit_threshold: float = 0.995,
+    min_depth_usdc: float = 1.0,
     concurrency: int = 10,
 ) -> list[ArbOpportunity]:
     """

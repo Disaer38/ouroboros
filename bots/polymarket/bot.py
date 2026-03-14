@@ -48,10 +48,10 @@ def setup_logging(verbose: bool = False) -> None:
 async def run_paper(
     *,
     interval: float = 30.0,
-    max_position: float = 10.0,
+    max_position: float = 24.0,
     max_exposure: float = 50.0,
-    profit_threshold: float = 0.97,
-    min_depth: float = 2.0,
+    profit_threshold: float = 0.995,
+    min_depth: float = 1.0,
     once: bool = False,
     verbose: bool = False,
 ) -> None:
@@ -67,7 +67,7 @@ async def run_paper(
     )
 
     print(f"\n🤖 Polymarket Paper Trader")
-    print(f"   Strategy: neg-risk BTC-only (YES+NO < {profit_threshold})")
+    print(f"   Strategy: neg-risk BTC+ETH (YES+NO < {profit_threshold}, guh123 profile)")
     print(f"   Max position: ${max_position:.0f} | Max exposure: ${max_exposure:.0f}")
     print(f"   Scan interval: {interval}s {'(single scan)' if once else ''}")
     print()
@@ -342,9 +342,9 @@ Examples:
     parser.add_argument(
         "--max-position",
         type=float,
-        default=10.0,
+        default=24.0,
         dest="max_position",
-        help="Max USDC per trade (default: 10)",
+        help="Max USDC per trade (default: 24)",
     )
     parser.add_argument(
         "--max-exposure",
@@ -356,16 +356,16 @@ Examples:
     parser.add_argument(
         "--profit-threshold",
         type=float,
-        default=0.97,
+        default=0.995,
         dest="profit_threshold",
-        help="Enter if YES+NO < this value (default: 0.97)",
+        help="Enter if YES+NO < this value (default: 0.995, guh123 profile)",
     )
     parser.add_argument(
         "--min-depth",
         type=float,
-        default=2.0,
+        default=1.0,
         dest="min_depth",
-        help="Minimum USDC depth per side (default: 2)",
+        help="Minimum USDC depth per side (default: 1)",
     )
     parser.add_argument(
         "--once",
